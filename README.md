@@ -309,6 +309,66 @@ export LLM_ENABLED=0
 
 ---
 
-## 许可
+## Windows 版本路线图
 
-MIT License
+当前版本基于 Linux IBus 框架开发。未来改造为 Windows 版本的技术路线：
+
+### IME 框架层
+
+| Linux (当前) | Windows (目标) |
+|---|---|
+| IBus Engine (D-Bus 服务) | Windows Text Services Framework (TSF) |
+| `ibus_main.py` 作为后端 | `win_main.py` 作为后端，通过 TSF COM 接口注册 |
+| GLib MainLoop 事件驱动 | Windows 消息循环 (PeekMessage/DispatchMessage) |
+| `ibus-daemon` 管理生命周期 | `CTfMonitor`/COM 注册管理生命周期 |
+
+### 引擎层（无需改动）
+
+```
+ime-core/
+├── engine.py          ← 平台无关，直接复用
+├── pinyin_map.py      ← 纯数据+算法，直接复用
+├── llm_backend.py     ← HTTP API 调用，直接复用
+├── learner.py         ← 文件 I/O，直接复用
+├── token_stats.py     ← 文件 I/O，直接复用
+├── config.py          ← 文件 I/O，直接复用
+└── data/              ← 词库数据，直接复用
+```
+
+核心引擎 7 个模块全部平台无关，**零修改**迁移。
+
+### 需要重写的模块（约 500 行）
+
+| 模块 | Linux | Windows |
+|------|-------|---------|
+| 入口 | `ibus_main.py` | `win_main.py` (Python + ctypes + TSF) |
+| GUI 原型 | `gui.py` (tkinter) | `gui.py` 可选 (tkinter 在 Windows 也可运行) |
+| 安装 | `install.sh` | `install.ps1` 或 MSI 安装包 |
+| 键盘钩子 | IBus key event | `SetWindowsHookEx(WH_KEYBOARD_LL)` + TSF key sink |
+| 候选窗口 | IBus LookupTable | TSF `ITfCandidateListUIElement` 或自绘窗口 |
+
+### 技术选型（Windows）
+
+```
+Windows TSF 输入法
+      │
+┌─────┴──────┐
+│ Python 3.x  │ ← 与 Linux 版共用 ime-core 核心
+│ ctypes TSF  │ ← 直接调用 COM 接口，无需 C++ 编译
+│ 自绘候选窗  │ ← pywin32 / ctypes + GDI
+└─────┬──────┘
+      │
+┌─────┴──────┐
+│ Ollama/WSL │ ← 本地模型可选
+│ DeepSeek   │ ← 远程 API，平台无关
+└────────────┘
+```
+
+Windows 版本的核心策略：**用 Python 的 ctypes 直接调用 TSF COM 接口**，避免 C++ 编译和 DLL 注册的复杂性。用户只需 `pip install pywin32` 即可运行。
+
+### 移植步骤
+
+1. **阶段一** — TSF 骨架：注册 CLSID，实现 `ITfTextInputProcessor`，接收键盘事件
+2. **阶段二** — 候选窗口：接管焦点窗口，弹出候选列表，支持键盘选择
+3. **阶段三** — 引擎集成：对接 `ime-core` 核心模块，完成输入链路
+4. **阶段四** — 安装包：`pip install ime-llm-windows` 一键安装

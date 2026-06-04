@@ -47,11 +47,15 @@ LAUNCHER
     cp "$IME_CORE_DIR"/llm_backend.py  /usr/share/ibus-ime-llm/
     cp "$IME_CORE_DIR"/pinyin_map.py   /usr/share/ibus-ime-llm/
     cp "$IME_CORE_DIR"/ibus_main.py    /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/learner.py      /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/token_stats.py  /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/settings.py     /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/gui.py          /usr/share/ibus-ime-llm/
 
     # 3. Copy data directory
     echo "  → Copying data directory"
     mkdir -p /usr/share/ibus-ime-llm/data
-    cp "$IME_CORE_DIR"/data/pinyin_map_ext.json /usr/share/ibus-ime-llm/data/
+    cp "$IME_CORE_DIR"/data/*.json /usr/share/ibus-ime-llm/data/ 2>/dev/null || true
 
     # 4. Icon
     echo "  → Installing icon"
@@ -83,8 +87,8 @@ LAUNCHER
     echo "  (or edit ~/.bashrc to make it permanent)"
     echo ""
     echo "For local model (Ollama):"
-    echo "  export LLM_ENDPOINT='http://localhost:11434/v1'"
-    echo "  export LLM_MODEL='qwen2.5:1.5b'"
+    echo "  export OLLAMA_ENDPOINT='http://localhost:11434/v1'"
+    echo "  export OLLAMA_MODEL='qwen2.5:7b'"
 }
 
 do_uninstall() {
