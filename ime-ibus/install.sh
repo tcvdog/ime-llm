@@ -43,21 +43,15 @@ LAUNCHER
     # We need the full ime-core package, not just bus_main.py
     echo "  → Copying ime-core modules to /usr/share/ibus-ime-llm/"
     cp "$IME_CORE_DIR"/engine.py       /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/cache.py        /usr/share/ibus-ime-llm/
     cp "$IME_CORE_DIR"/config.py       /usr/share/ibus-ime-llm/
     cp "$IME_CORE_DIR"/llm_backend.py  /usr/share/ibus-ime-llm/
     cp "$IME_CORE_DIR"/pinyin_map.py   /usr/share/ibus-ime-llm/
     cp "$IME_CORE_DIR"/ibus_main.py    /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/freq_db.py      /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/bigram_model.py /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/viterbi.py      /usr/share/ibus-ime-llm/
 
-    # 3. Copy data directory (pinyin map ext, bigram/unigram counts)
+    # 3. Copy data directory
     echo "  → Copying data directory"
     mkdir -p /usr/share/ibus-ime-llm/data
     cp "$IME_CORE_DIR"/data/pinyin_map_ext.json /usr/share/ibus-ime-llm/data/
-    cp "$IME_CORE_DIR"/data/bigram_counts.json  /usr/share/ibus-ime-llm/data/
-    cp "$IME_CORE_DIR"/data/unigram_counts.json /usr/share/ibus-ime-llm/data/
 
     # 4. Icon
     echo "  → Installing icon"
