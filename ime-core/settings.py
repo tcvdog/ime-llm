@@ -47,6 +47,23 @@ class SettingsDialog:
             **pad, anchor="w"
         )
 
+        # ── Global LLM enable/disable toggle ──
+        llm_frame = tk.Frame(self._win, bg="#FFF3E0", bd=1, relief="solid")
+        llm_frame.pack(fill="x", padx=16, pady=(0, 8))
+        self._llm_toggle_var = tk.BooleanVar(value=self._cfg.get("llm_enabled", True))
+        self._llm_toggle = tk.Checkbutton(
+            llm_frame, text="启用 LLM 智能排序（Ollama + DeepSeek）",
+            font=("Microsoft YaHei", 12, "bold"),
+            variable=self._llm_toggle_var,
+            bg="#FFF3E0", fg="#E65100", selectcolor="#FFF3E0",
+        )
+        self._llm_toggle.pack(anchor="w", padx=12, pady=8)
+        tk.Label(
+            llm_frame,
+            text="关闭后仅使用本地词库，不联网、不消耗 token，适合快速打字或离线环境",
+            font=("Microsoft YaHei", 9), fg="#888", bg="#FFF3E0",
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
         # ── Mode ──
         mode_frame = tk.Frame(self._win)
         mode_frame.pack(fill="x", **pad)
@@ -166,6 +183,7 @@ class SettingsDialog:
     def _collect(self) -> dict:
         """Read form values into a config dict."""
         return {
+            "llm_enabled": self._llm_toggle_var.get(),
             "mode": self._mode_var.get(),
             "ollama": {
                 "enabled": True,

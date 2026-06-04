@@ -64,6 +64,10 @@ class Engine:
         self._mode = mode if mode in VALID_MODES else "map_ollama_deepseek"
         self._use_ollama = self._mode in ("map_ollama", "map_ollama_deepseek")
         self._use_deepseek = self._mode in ("map_deepseek", "map_ollama_deepseek")
+        # Master LLM switch — overrides mode selection
+        if not cfg.get("llm_enabled", True):
+            self._use_ollama = False
+            self._use_deepseek = False
 
         self._load_word_dict()
 
@@ -99,6 +103,11 @@ class Engine:
         self._mode = mode if mode in VALID_MODES else "map_ollama_deepseek"
         self._use_ollama = self._mode in ("map_ollama", "map_ollama_deepseek")
         self._use_deepseek = self._mode in ("map_deepseek", "map_ollama_deepseek")
+        # Master LLM switch — overrides mode selection
+        llm_enabled = cfg.get("llm_enabled", True)
+        if not llm_enabled:
+            self._use_ollama = False
+            self._use_deepseek = False
         self.llm = LLMBackend(
             endpoint=cfg["llm"]["endpoint"],
             model=cfg["llm"]["model"],

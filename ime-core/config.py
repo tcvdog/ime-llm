@@ -22,6 +22,7 @@ _USER_CONFIG_PATH = os.path.join(_XDG_CONFIG_HOME, "ime-llm", "config.json")
 
 DEFAULT_CONFIG: dict = {
     "mode": "map_ollama_deepseek",  # map_only | map_ollama | map_deepseek | map_ollama_deepseek
+    "llm_enabled": True,           # master switch: False forces map_only
     "llm": {
         "endpoint": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
@@ -72,6 +73,8 @@ def load_config(path: str | None = None) -> dict:
             pass
 
     # 2. Environment variables override everything
+    if os.environ.get("LLM_ENABLED"):
+        cfg["llm_enabled"] = os.environ["LLM_ENABLED"].lower() in ("1", "true", "yes", "on")
     if os.environ.get("LLM_MODE"):
         mode = os.environ["LLM_MODE"]
         if mode in VALID_MODES:

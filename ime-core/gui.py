@@ -470,12 +470,16 @@ class IMEGUI:
     def _update_mode_label(self):
         mode = self.engine.mode
         labels = {
-            "map_only": "\u2726 \u6620\u5c04",
+            "map_only": "\u2726 映射",
             "map_ollama": "\u2726 Ollama",
             "map_deepseek": "\u2726 DeepSeek",
             "map_ollama_deepseek": "\u2726 O+D",
         }
-        self._mode_label.config(text=labels.get(mode, mode))
+        llm_off = not (self.engine._use_ollama or self.engine._use_deepseek)
+        if llm_off:
+            self._mode_label.config(text="\u2726 仅映射（LLM 已关）", fg="#E65100")
+        else:
+            self._mode_label.config(text=labels.get(mode, mode), fg="#666")
 
     def _open_settings(self):
         dialog = SettingsDialog(self.root)
