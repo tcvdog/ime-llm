@@ -515,13 +515,13 @@ class IMEBusEngine(IBus.Engine):
             elif self._engine._use_deepseek:
                 parts.append(f"D_")
 
-            # Token usage stats — input/output separated
+            # Token usage stats — input/output separated, 15-char gap from LLM indicators
             if self._engine._use_deepseek:
                 stats = self._engine.get_token_stats()
                 pt = stats.get("prompt_tokens", 0)
                 ct = stats.get("completion_tokens", 0)
                 if pt or ct:
-                    parts.append(f"I:{pt} O:{ct}")
+                    parts.append(" " * 14 + f"I:{pt} O:{ct}")
 
             aux_text = " ".join(parts)
             if self._pinyin:
