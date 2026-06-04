@@ -1,0 +1,36 @@
+============================================================
+拼音→汉字 LLM 转换验证结果
+时间: 2026-06-03 22:16:22
+模型: deepseek-chat
+Endpoint: https://api.deepseek.com/v1
+============================================================
+
+总用例: 37  精确匹配: 32/37 (86.5%)
+平均字符准确率: 92.9%  平均延迟: 803ms
+
+--- 失败用例 (5) ---
+  [disambig_xiamian_food] (disambig)
+    拼音:   xiamian
+    上下文: '我饿了，想吃一碗'
+    期望:   虾面
+    实际:   下面
+  [disambig_shujia_price] (disambig)
+    拼音:   shujia
+    上下文: '这本定价太高，'
+    期望:   书价
+    实际:   书架
+  [disambig_qizhong_among] (disambig)
+    拼音:   qizhong
+    上下文: '这个班级共有30人，'
+    期望:   其中
+    实际:   期中
+  [long_sentence_05] (long_sentence)
+    拼音:   wobuzhidaogairenhezuo
+    上下文: ''
+    期望:   我不知道该怎么办
+    实际:   我不知道该怎么做
+  [name_02] (named_entity)
+    拼音:   li bai
+    上下文: '今天我花了五百块，还剩下了三'
+    期望:   三百
+    实际:   李白

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+ime-core/user_cache.json
+ime-core/__pycache__/
+validate-ime/__pycache__/
+
+# Optional: keep results dir but ignore its contents
+# validate-ime/results/ can be kept for reference

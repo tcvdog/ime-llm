@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IBus Component XML for IME LLM (AI-powered pinyin IME).
+
+  Install to /usr/share/ibus/component/ime-llm.xml
+-->
+<component>
+    <name>org.freedesktop.IBus.IMEEngine</name>
+    <description>IME LLM Component — AI-powered pinyin input with local vocabulary learning</description>
+    <exec>/usr/libexec/ibus-engine-ime-llm --ibus</exec>
+    <version>0.1.0</version>
+    <author>IME LLM Project</author>
+    <license>MIT</license>
+    <homepage></homepage>
+    <textdomain>ibus-ime-llm</textdomain>
+
+    <engines>
+        <engine>
+            <name>ime-llm</name>
+            <longname>IME LLM (AI 输入法)</longname>
+            <description>
+                AI-powered pinyin IME. Uses local vocabulary learning cache for instant
+                personalized suggestions and optional LLM backend (DeepSeek / Ollama / etc.)
+                for deep context-aware disambiguation.
+                No built-in dictionary — starts empty and learns from your usage.
+            </description>
+            <language>zh_CN</language>
+            <license>MIT</license>
+            <author>IME LLM Project</author>
+            <icon>/usr/share/ibus-ime-llm/icons/ime-llm.svg</icon>
+            <layout>us</layout>
+            <rank>80</rank>
+            <symbol>AI</symbol>
+        </engine>
+    </engines>
+</component>
