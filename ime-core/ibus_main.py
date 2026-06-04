@@ -166,6 +166,13 @@ class IMEBusEngine(IBus.Engine):
         if state & IBus.ModifierType.RELEASE_MASK:
             return False
 
+        # ── Ctrl+Shift+L — toggle LLM on/off ──
+        if (state & IBus.ModifierType.CONTROL_MASK
+                and state & IBus.ModifierType.SHIFT_MASK
+                and keyval == ord('L')):
+            self._toggle_llm()
+            return True
+
         # Ignore Ctrl/Alt modified keys (but allow Shift)
         if state & (IBus.ModifierType.CONTROL_MASK | IBus.ModifierType.MOD1_MASK):
             return False
@@ -444,6 +451,34 @@ class IMEBusEngine(IBus.Engine):
         except Exception as exc:
             log.error("_page_prev failed: %s", exc)
 
+    def _toggle_llm(self):
+        """Toggle LLM on/off via Ctrl+Shift+L shortcut."""
+        llm_on = self._engine.config.get("llm_enabled", True)
+        new_val = not llm_on
+        self._engine.config["llm_enabled"] = new_val
+        # Persist to config file
+        from config import save_config
+        save_config(self._engine.config)
+        # Reload engine flags
+        self._engine.reload_config(self._engine.config)
+        # Show toast in auxiliary text
+        status = "ON" if new_val else "OFF"
+        toast = IBus.Text.new_from_string(f"LLM: {status}")
+        self.update_auxiliary_text(toast, True)
+        # Hide toast after 1.5s
+        GLib.timeout_add(1500, self._hide_llm_toast)
+        log.info("LLM toggled %s by user", status)
+        # Reset any composing state
+        self._pinyin = ""
+        self._candidates = []
+        self.hide_lookup_table()
+
+    def _hide_llm_toast(self) -> bool:
+        """Hide the LLM status toast."""
+        if not self._pinyin:
+            self.hide_auxiliary_text()
+        return False
+
     def _update_ui(self):
         """Update preedit text, auxiliary source indicator, and lookup table."""
         try:
@@ -462,6 +497,9 @@ class IMEBusEngine(IBus.Engine):
             self._llm_spinner_idx += 1
 
             parts = []
+            # LLM master switch indicator
+            if not (self._engine._use_ollama or self._engine._use_deepseek):
+                parts.append("LLM:OFF")
             parts.append("M\u2713")  # Map always ready
             if has_ollama:
                 parts.append(f"O\u2713")
