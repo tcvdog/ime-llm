@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Integration test for the IME engine pipeline."""
+"""Integration test for the IME engine pipeline (LLM-only mode)."""
 
 import sys
 import os
@@ -26,7 +26,7 @@ def check(name, actual, expected):
 
 
 print("=" * 54)
-print("  IME Engine Integration Test")
+print("  IME Engine Integration Test (LLM-only)")
 print("=" * 54)
 
 # ── 1. Pinyin segmentation ──
@@ -48,7 +48,6 @@ multi_cands = generate_candidates("xiamian")
 print(f"  multi 'xiamian' candidates ({len(multi_cands)}): {multi_cands[:5]}")
 assert len(multi_cands) > 0, "Empty candidates for 'xiamian'"
 
-# Check specific known mappings
 known_cands = generate_candidates("ni hao")
 print(f"  'ni hao' candidates ({len(known_cands)}): {known_cands[:5]}")
 
@@ -59,48 +58,23 @@ print(f"  'ni hao' → {len(result)} candidates")
 for text, score, source in result[:5]:
     print(f"    [{source}] {text} (score={score:.1f})")
 
-engine.reset_context()
-
-# With context - should show basic candidates
-result_context = engine.process("xiamian")
-print(f"\n  'xiamian' → {len(result_context)} candidates")
-for text, score, source in result_context[:5]:
-    print(f"    [{source}] {text} (score={score:.1f})")
-
-# ── 4. Cache learning ──
-print("\n[4] Cache learning")
+# ── 4. Context tracking ──
+print("\n[4] Context tracking")
 engine.reset_context()
 engine.process("xiamian")
 engine.select("虾面", "xiamian")
-print(f"  Learned: 'xiamian' → '虾面' (context: '{engine.context}')")
+print(f"  Selected '虾面' → context: '{engine.context}'")
 
-engine.reset_context()
 engine.context = "我饿了想吃一碗"
-result_cached = engine.process("xiamian")
-print(f"  Same context candidates:")
-source_shown = set()
-for text, score, source in result_cached[:5]:
-    source_shown.add(source)
-    print(f"    [{source}] {text} (score={score:.1f})")
+result_ctx = engine.process("xiamian")
+print(f"  Context '我饿了想吃一碗':")
+for text, score, source in result_ctx[:5]:
+    print(f"    [{source}] {text}")
+# In LLM mode, source should be "map" (cache is removed)
+assert all(src == "map" for _, _, src in result_ctx[:5]), "Expected all map sources"
 
-# Expect cache to boost "虾面" (even though context differs slightly)
-cached_items = [(t, s) for t, s, src in result_cached if src == "cache"]
-if cached_items:
-    print(f"  ✓ Cache boosted: {cached_items}")
-else:
-    print(f"  Note: Cache did not boost (context context differs)")
-
-# ── 5. Different context = different result ──
-print("\n[5] Context sensitivity")
-engine.reset_context()
-engine.context = "把书放在桌子"
-result_diff = engine.process("xiamian")
-print(f"  Context '把书放在桌子':")
-first_source = result_diff[0][2] if result_diff else "none"
-print(f"  Top: [{first_source}] {result_diff[0][0] if result_diff else 'N/A'}")
-
-# ── 6. LLM backend (if configured) ──
-print("\n[6] LLM backend (non-blocking refinement)")
+# ── 5. LLM backend (if configured) ──
+print("\n[5] LLM backend (non-blocking refinement)")
 if engine.llm.available:
     print("  LLM configured, testing convert...")
     text, elapsed = engine.llm.convert("xiamian", "我饿了想吃一碗")
@@ -111,20 +85,12 @@ if engine.llm.available:
 else:
     print("  LLM not configured (set LLM_API_KEY to test)")
 
-# ── 7. Cache persistence ──
-print("\n[7] Cache persistence")
-engine.save_cache("/tmp/test_ime_cache.json")
-cache_size_before = engine.cache.size()
-
-engine2 = Engine()
-engine2.load_cache("/tmp/test_ime_cache.json")
-cache_size_after = engine2.cache.size()
-check("save/load roundtrip", cache_size_after, cache_size_before)
-
-# Cleanup
-import os as _os
-if _os.path.exists("/tmp/test_ime_cache.json"):
-    _os.remove("/tmp/test_ime_cache.json")
+# ── 6. Engine has no cache persistence (removed) ──
+print("\n[6] Local cache persistence — removed (LLM-only)")
+print("  ✓ No cache layer to save/load")
+assert not hasattr(engine, 'cache'), "Cache should not exist in LLM-only mode"
+assert not hasattr(engine, 'freq_db'), "CharFrequencyDB should not exist in LLM-only mode"
+assert not hasattr(engine, 'save_cache'), "save_cache should not exist"
 
 # ── Summary ──
 print("\n" + "=" * 54)

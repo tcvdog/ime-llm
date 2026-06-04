@@ -1,15 +1,12 @@
 """
-Layer 3: LLM backend for async pinyin→character refinement.
+LLM backend for pinyin→character conversion (single LLM provider).
 
-Supports three modes:
-  - convert():   single best guess (legacy)
-  - rank():      re-rank a list of candidates + optional character weight adjustments
-  - suggest_sentence(): full-sentence conversion from continuous pinyin
+The LLM is the PRIMARY disambiguation engine. It receives:
+  - The pinyin input (mixed 简拼/全拼/continuous)
+  - A baseline candidate list from pinyin_map
+  - The preceding text context
 
-Features:
-  - Result caching (per pinyin+context) to avoid redundant API calls
-  - Viterbi baseline included in prompt for more informed LLM ranking
-  - Compact 'adjust' block for character frequency learning
+And returns a re-ranked candidate list based on its Chinese language knowledge.
 """
 
 import json
@@ -25,25 +22,22 @@ from config import DEFAULT_CONFIG
 _MAX_CACHE = 64
 
 RANK_PROMPT = (
-    "You are a Chinese IME ranking assistant. "
-    "Given pinyin input, a list of candidate conversions, and the preceding context, "
-    "re-rank the candidates from most to least likely.\n\n"
-    'Output format:\n'
-    'candidate1,candidate2,candidate3,...\n'
-    '{"adjust": {"字": +0.5, "词": -0.3}}\n\n'
+    "You are the disambiguation engine for a Chinese pinyin IME. "
+    "Your job is to re-rank the candidate list so the most likely "
+    "character(s) come first.\n\n"
+    "Input includes:\n"
+    "  - The pinyin the user typed (may mix 简拼 initials and 全拼 full syllables)\n"
+    "  - A candidate list from the pinyin map (ordered by character frequency)\n"
+    "  - The preceding context (typed so far)\n\n"
     "Rules:\n"
-    "  - Separate candidates with commas.\n"
-    "  - Output EXACT candidates from the list; do not modify or create new ones.\n"
-    "  - Use the preceding context to pick the most natural continuation.\n"
-    "    For example, after '我' prefer '是' over '十'; after '今天' prefer '天气'.\n"
-    "  - If no context, rely on word frequency and common collocations.\n"
-    "  - Optional: append a JSON object with 'adjust' dict for character weight "
-    "changes (+0.1 to +2.0 boost, -0.1 to -2.0 reduce). Small changes (0.1-0.5) "
-    "for subtle shifts, larger (1.0-2.0) for strong preferences. "
-    "Only include characters you're confident about.\n"
-    "  - If no adjustments needed, omit the JSON object.\n"
-    '  - Keep JSON compact on one line: {"adjust":{"字":0.5}}\n'
-    '  - Do NOT output anything before the candidate list.'
+    "  1. Re-rank candidates from MOST to LEAST likely given the context.\n"
+    "  2. Output EXACT candidates from the list — do NOT modify or create new ones.\n"
+    "  3. Use your knowledge of Chinese vocabulary, grammar, and common usage.\n"
+    "  4. Context is critical — after '我吃了' the next word is very different "
+    "from after '我想去'.\n"
+    "  5. If no context, rely on word frequency and common collocations.\n"
+    "  6. Output format: candidate1,candidate2,candidate3,...\n"
+    "     (comma-separated, no extra text, no English, no explanation)"
 )
 
 _CONV_PROMPT = (
@@ -59,19 +53,6 @@ def _cache_key(pinyin: str, context: str) -> str:
     return f"{pinyin}||{context}"
 
 
-def _json_brace_end(text: str, start: int) -> int:
-    """Find the matching closing brace starting from start position."""
-    brace_count = 0
-    for i in range(start, len(text)):
-        if text[i] == '{':
-            brace_count += 1
-        elif text[i] == '}':
-            brace_count -= 1
-            if brace_count == 0:
-                return i
-    return -1
-
-
 class LLMBackend:
     def __init__(self, endpoint: str = None, model: str = None, api_key: str = None,
                  timeout: int = None):
@@ -81,10 +62,7 @@ class LLMBackend:
         self.api_key = api_key or cfg["api_key"]
         self.timeout = timeout if timeout is not None else cfg.get("timeout", 15)
 
-        # Result cache: (pinyin, context) → (reordered, weight_adj, timestamp)
-        self._cache: OrderedDict[str, tuple[list[str], Optional[dict], float]] = (
-            OrderedDict()
-        )
+        self._cache: OrderedDict[str, tuple[list[str], float]] = OrderedDict()
         self._last_result: Optional[str] = None
 
     @property
@@ -133,33 +111,11 @@ class LLMBackend:
         except (KeyError, IndexError, TypeError):
             return None, elapsed
 
-    def _parse_rank_output(
-        self, raw: str, candidates: list[str]
-    ) -> tuple[list[str], Optional[dict[str, float]]]:
-        """Parse LLM rank output into reordered list + optional weight adjustments."""
-        weight_adj: dict[str, float] = {}
-        text_part = raw
-
-        # Extract JSON adjustment block at end: {"adjust": {...}}
-        json_start = raw.rfind('{"adjust"')
-        if json_start >= 0:
-            brace_end = _json_brace_end(raw, json_start)
-            if brace_end > json_start:
-                try:
-                    json_str = raw[json_start:brace_end + 1]
-                    adj_data = json.loads(json_str)
-                    raw_adj = adj_data.get("adjust", {})
-                    for k, v in raw_adj.items():
-                        if isinstance(k, str) and isinstance(v, (int, float)):
-                            weight_adj[k] = float(v)
-                    text_part = raw[:json_start].strip()
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
-        # Parse candidate list (comma or Chinese comma separated)
+    def _parse_rank_output(self, raw: str, candidates: list[str]) -> list[str]:
+        """Parse LLM rank output into reordered list."""
         parsed: list[str] = []
         seen: set[str] = set()
-        for token in text_part.replace("，", ",").split(","):
+        for token in raw.replace("，", ",").split(","):
             t = token.strip().strip("\"'「」『』（）()")
             if t and t in candidates and t not in seen:
                 parsed.append(t)
@@ -171,8 +127,7 @@ class LLMBackend:
                 parsed.append(c)
                 seen.add(c)
 
-        adj_out = weight_adj if weight_adj else None
-        return parsed, adj_out
+        return parsed
 
     # ── Public API ──
 
@@ -187,11 +142,7 @@ class LLMBackend:
     def suggest_sentence(
         self, pinyin: str, context: str = ""
     ) -> tuple[Optional[str], float]:
-        """LLM suggests the full sentence conversion (single best guess).
-
-        Unlike convert(), this explicitly asks for sentence-level conversion
-        and is intended for longer continuous pinyin input.
-        """
+        """LLM suggests the full sentence conversion."""
         if not self.available:
             return None, 0.0
 
@@ -210,18 +161,16 @@ class LLMBackend:
         pinyin: str,
         candidates: list[str],
         context: str = "",
-        baseline: Optional[list[str]] = None,
-    ) -> tuple[Optional[list[str]], Optional[dict[str, float]], float]:
+    ) -> tuple[Optional[list[str]], None, float]:
         """Re-rank candidates by contextual likelihood.
 
         Args:
             pinyin: the pinyin input string
             candidates: candidate list to re-rank
             context: preceding text context
-            baseline: optional baseline ranking (e.g. Viterbi output) for reference
 
         Returns:
-            (reordered_list | None, weight_adjustments | None, latency_seconds)
+            (reordered_list | None, None, latency_seconds)
         """
         if not self.available or not candidates:
             return None, None, 0.0
@@ -229,34 +178,30 @@ class LLMBackend:
         # Check cache
         ck = _cache_key(pinyin, context)
         if ck in self._cache:
-            cached_reordered, cached_adj, _ = self._cache.pop(ck)
-            # Move to end (most recently used)
-            self._cache[ck] = (cached_reordered, cached_adj, time.time())
-            return cached_reordered, cached_adj, 0.0
+            cached_reordered, _ = self._cache.pop(ck)
+            self._cache[ck] = (cached_reordered, time.time())
+            return cached_reordered, None, 0.0
 
         # Build user message
         candidate_str = "，".join(candidates)
         parts = [f"拼音：{pinyin}", f"候选词：{candidate_str}"]
         if context:
             parts.insert(0, f"上下文：{context}")
-        if baseline:
-            base_str = "，".join(baseline[:6])
-            parts.append(f"基线排序（Viterbi）：{base_str}")
         user_msg = "\n".join(parts)
 
         raw, elapsed = self._call(RANK_PROMPT, user_msg, max_tokens=512)
         if raw is None:
             return None, None, elapsed
 
-        parsed, adj_out = self._parse_rank_output(raw, candidates)
+        parsed = self._parse_rank_output(raw, candidates)
 
         # Cache the result
         if parsed:
-            self._cache[ck] = (parsed, adj_out, time.time())
+            self._cache[ck] = (parsed, time.time())
             while len(self._cache) > _MAX_CACHE:
                 self._cache.popitem(last=False)
 
-        return parsed, adj_out, elapsed
+        return parsed, None, elapsed
 
     def clear_cache(self):
         self._cache.clear()

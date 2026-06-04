@@ -43,7 +43,7 @@ from config import load_config
 log = logging.getLogger("ime-ibus")
 _DEFAULT_OBJECT_PATH = "/org/freedesktop/IBus/engine/IMEEngine/0"
 _BUS_NAME = "org.freedesktop.IBus.IMEEngine"
-_CACHE_SAVE_INTERVAL = 60  # seconds
+
 
 # ASCII → fullwidth Chinese punctuation
 PUNCTUATION_MAP = {
@@ -110,9 +110,8 @@ class IMEBusEngine(IBus.Engine):
         super().__init__(connection=bus.get_connection(), object_path=object_path)
         self._bus = bus
 
-        # ── Core engine (Layer 1 + Layer 2 + Layer 3) ──
+        # ── Core engine ──
         self._engine = Engine(config=load_config())
-        self._engine.load_cache()
         max_candidates = self._engine.config.get("engine", {}).get("max_candidates", 36)
 
         # ── State ──
@@ -130,9 +129,8 @@ class IMEBusEngine(IBus.Engine):
             orientation=IBus.Orientation.HORIZONTAL,
         )
 
-        # ── Timers ──
+        # ── Timer ──
         GLib.timeout_add(400, self._on_poll_llm)
-        GLib.timeout_add_seconds(_CACHE_SAVE_INTERVAL, self._on_save_cache)
 
         log.info("IMEBusEngine initialized")
 
@@ -312,8 +310,7 @@ class IMEBusEngine(IBus.Engine):
 
     def do_destroy(self):
         try:
-            self._engine.save_cache()
-            log.info("Cache saved, engine destroyed")
+            log.info("Engine destroyed")
             super().destroy()
         except Exception as exc:
             log.error("do_destroy error: %s", exc)
@@ -434,14 +431,11 @@ class IMEBusEngine(IBus.Engine):
             else:
                 self.hide_preedit_text()
 
-            # ── Source indicator (auxiliary area) ──
+            # ── Source indicator ──
             has_llm = any(s == "llm" for _, s in self._candidates)
-            has_cache = any(s == "cache" for _, s in self._candidates)
             if self._pinyin and self._candidates:
                 if has_llm:
                     aux = IBus.Text.new_from_string("● LLM ✓")
-                elif has_cache:
-                    aux = IBus.Text.new_from_string("● 缓存")
                 else:
                     aux = IBus.Text.new_from_string("○ 拼音映射")
                 self.update_auxiliary_text(aux, True)
@@ -456,11 +450,7 @@ class IMEBusEngine(IBus.Engine):
                 saved_pos = self._lookup_table.get_cursor_pos()
                 self._lookup_table.clear()
                 for text, source in self._candidates:
-                    label = text
-                    if source == "llm":
-                        label = "✦" + text
-                    elif source == "cache":
-                        label = "·" + text
+                    label = "✦" + text if source == "llm" else text
                     self._lookup_table.append_candidate(
                         IBus.Text.new_from_string(label)
                     )
@@ -499,15 +489,6 @@ class IMEBusEngine(IBus.Engine):
         except Exception as exc:
             log.error("_on_poll_llm crashed: %s", exc, exc_info=True)
         return True
-
-    def _on_save_cache(self) -> bool:
-        """Periodically persist the user cache."""
-        try:
-            self._engine.save_cache()
-        except Exception as exc:
-            log.warning("Cache save failed: %s", exc)
-        return True
-
 
 class EngineFactory(IBus.Factory):
     """Factory that creates IMEBusEngine instances."""

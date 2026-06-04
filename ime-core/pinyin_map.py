@@ -8,10 +8,6 @@ Multi-syllable pinyin also checks a word dictionary for common phrases.
 
 import json
 import os
-from typing import Optional
-
-from bigram_model import BigramModel
-from viterbi import viterbi_decode, viterbi_rerank
 
 # ── Multi-syllable word dictionary ──────────────────────────────
 # Maps space-joined pinyin syllables to common Chinese words/phrases.
@@ -1393,30 +1389,23 @@ for _c in "abcdefghijklmnopqrstuvwxyz":
 
 def get_char_tuples(
     syllable: str,
-    freq_db: object = None,
     max_count: int = 15,
     expand_initials: bool = True,
 ) -> list[tuple[str, float]]:
-    """Get weighted (char, score) tuples, expanding initials if enabled.
-
-    If expand_initials is True and the syllable is a single letter that
-    is a valid initial, characters from ALL matching full syllables are
-    merged (each char appears once, with its highest score).
-    """
+    """Get weighted (char, score) tuples, expanding initials if enabled."""
     if expand_initials and len(syllable) == 1 and syllable in INITIAL_MAP:
         expanded_syls = INITIAL_MAP[syllable]
         if not expanded_syls:
             return []
         merged: dict[str, float] = {}
         for fs in expanded_syls:
-            entries = get_weighted_char_tuples(fs, freq_db, max_count=max_count)
+            entries = get_weighted_char_tuples(fs, max_count=max_count)
             for ch, sc in entries:
                 if ch not in merged or sc > merged[ch]:
                     merged[ch] = sc
-        # Sort by score descending, cap at max_count
         sorted_chars = sorted(merged.items(), key=lambda x: -x[1])
         return sorted_chars[:max_count]
-    return get_weighted_char_tuples(syllable, freq_db, max_count=max_count)
+    return get_weighted_char_tuples(syllable, max_count=max_count)
 
 
 def get_characters(syllable: str, max_count: int = 10) -> list[str]:
@@ -1426,47 +1415,20 @@ def get_characters(syllable: str, max_count: int = 10) -> list[str]:
 
 def get_weighted_characters(
     syllable: str,
-    freq_db: object = None,
     max_count: int = 10,
 ) -> list[str]:
-    """Return top N characters weighted by frequency (uses FreqDB if available).
-
-    When freq_db is provided, returns characters sorted by base frequency
-    score + any LLM runtime adjustments. Otherwise falls back to SYLLABLE_MAP.
-    """
-    if freq_db is not None:
-        try:
-            return freq_db.get_top_characters(syllable, max_count=max_count)
-        except AttributeError:
-            pass
+    """Return top N characters for a pinyin syllable, frequency-ordered."""
     return get_characters(syllable, max_count=max_count)
 
 
 def get_weighted_char_tuples(
     syllable: str,
-    freq_db: object = None,
     max_count: int = 15,
 ) -> list[tuple[str, float]]:
-    """Return (char, freq_score) tuples for a syllable, sorted by score descending.
-
-    This is the input format needed by Viterbi decoder.
-    Results are always intersected with SYLLABLE_MAP to filter out
-    noise from freq_db (characters mapped to wrong pinyin).
-    """
-    valid_chars = set(SYLLABLE_MAP.get(syllable.lower(), []))
-    if freq_db is not None:
-        try:
-            raw = freq_db.get_syllable_chars(syllable)[:max_count]
-            # Intersect with valid SYLLABLE_MAP entries to filter noise
-            result = [(ch, sc) for ch, sc in raw if ch in valid_chars]
-            if result:
-                return result
-        except AttributeError:
-            pass
+    """Return (char, freq_score) tuples for a syllable, sorted by score descending."""
     chars = SYLLABLE_MAP.get(syllable.lower(), [])[:max_count]
     if not chars:
         return []
-    # Without freq_db: assign scores based on position (1.0, 0.9, 0.8, ...)
     n = len(chars)
     return [(ch, max(0.1, 1.0 - i * 0.9 / n)) for i, ch in enumerate(chars)]
 
@@ -1522,34 +1484,16 @@ def segment_pinyin(pinyin: str) -> list[str]:
     return syllables
 
 
-_DEFAULT_BIGRAM: Optional[BigramModel] = None
-
-
-def _ensure_bigram_model() -> Optional[BigramModel]:
-    """Lazy-load the default BigramModel singleton."""
-    global _DEFAULT_BIGRAM
-    if _DEFAULT_BIGRAM is None:
-        try:
-            _DEFAULT_BIGRAM = BigramModel()
-        except Exception:
-            _DEFAULT_BIGRAM = None
-    return _DEFAULT_BIGRAM
-
-
 def generate_candidates(
     pinyin_input: str,
     max_combinations: int = 36,
-    freq_db: object = None,
-    bigram_model: object = None,
 ) -> list[str]:
     """Generate candidate word sequences from pinyin input.
 
     Strategy (for multi-syllable):
       1. Look up WORD_MAP for exact pinyin → include those words first.
-      2. Run Viterbi beam search (when bigram_model is available) for
-         sentence-level candidates optimised by bigram transition probs.
-      3. Fall back to character-level cartesian combinations.
-      4. Deduplicate while preserving order.
+      2. Fall back to character-level cartesian combinations.
+      3. Deduplicate while preserving order.
     """
     syllables = segment_pinyin(pinyin_input.strip())
     if not syllables:
@@ -1557,7 +1501,7 @@ def generate_candidates(
 
     # Single syllable: return weighted characters (expand initials)
     if len(syllables) == 1:
-        tups = get_char_tuples(syllables[0], freq_db, max_count=max_combinations)
+        tups = get_char_tuples(syllables[0], max_count=max_combinations)
         return [ch for ch, _ in tups]
 
     candidates: list[str] = []
@@ -1575,55 +1519,15 @@ def generate_candidates(
     if remaining <= 0:
         return candidates[:max_combinations]
 
-    # Step 2: Viterbi beam search (sentence-level, bigram-optimised)
-    bm = bigram_model if bigram_model is not None else _ensure_bigram_model()
-    viterbi_used = False
-    if bm is not None:
-        try:
-            # Build syllable → weighted char tuples for Viterbi
-            base_max = 15 if freq_db is not None else 10
-            syll_chars = []
-            for syl in syllables:
-                ctuples = get_char_tuples(syl, freq_db, max_count=base_max)
-                if not ctuples and freq_db is not None:
-                    ctuples = get_char_tuples(syl, None, max_count=base_max)
-                syll_chars.append(ctuples)
-
-            beam_results = viterbi_decode(
-                syllables, syll_chars,
-                bigram_model=bm,
-                beam_size=min(remaining * 2, 30),
-                max_results=remaining,
-            )
-            for seq_scores in beam_results:
-                text = "".join(ch for ch, _ in seq_scores)
-                if text not in seen:
-                    candidates.append(text)
-                    seen.add(text)
-                    remaining -= 1
-                    if remaining <= 0:
-                        break
-            viterbi_used = True
-        except Exception:
-            pass
-
-    remaining = max_combinations - len(candidates)
-    if remaining <= 0:
-        return candidates[:max_combinations]
-
-    # Step 3: Fallback character combinations (no bigram model, or
-    # Viterbi didn't produce enough candidates)
-    # Use more base chars since we have 3500+ in the freq DB
-    base_max = 15 if freq_db is not None else 10
-    first_tups = get_char_tuples(syllables[0], freq_db, max_count=base_max)
+    # Step 2: Cartesian combinations as fallback
+    base_max = 10
+    first_tups = get_char_tuples(syllables[0], max_count=base_max)
     first_chars = [ch for ch, _ in first_tups]
     for ch in first_chars:
         if len(candidates) >= max_combinations:
             break
         rest = generate_candidates(" ".join(syllables[1:]),
-                                   max_combinations - len(candidates),
-                                   freq_db=freq_db,
-                                   bigram_model=None)  # no recursion for Viterbi
+                                   max_combinations - len(candidates))
         if not rest:
             if ch not in seen:
                 candidates.append(ch)
@@ -1638,40 +1542,6 @@ def generate_candidates(
                         break
 
     return candidates[:max_combinations]
-
-
-# ── Local re-ranker (offline, no LLM needed) ─────────────────
-# Bigram frequency map built from WORD_MAP
-# Used to score multi-character candidates by how common
-# their character pairs are in known Chinese words.
-_BIGRAM_FREQ: dict[str, int] = {}
-for _words in WORD_MAP.values():
-    for _word in _words:
-        for _i in range(len(_word) - 1):
-            _bg = _word[_i:_i+2]
-            _BIGRAM_FREQ[_bg] = _BIGRAM_FREQ.get(_bg, 0) + 1
-
-
-def local_rank(candidates: list[str]) -> list[str]:
-    """Re-rank multi-character candidates by bigram frequency.
-
-    Candidates made of common character pairs (e.g. "问题" from
-    WORD_MAP) score higher than rare combinations. Single characters
-    keep their original order.
-    """
-    if not candidates:
-        return candidates
-
-    def score(text: str) -> float:
-        if len(text) <= 1:
-            return 0.0
-        total = 0.0
-        for i in range(len(text) - 1):
-            total += _BIGRAM_FREQ.get(text[i:i+2], 0)
-        return total / (len(text) - 1)  # normalize by bigram count
-
-    # Sort by score (desc), tie-break by original position
-    return sorted(candidates, key=lambda x: (-score(x), candidates.index(x)))
 
 
 def syllable_count(pinyin_input: str) -> int:

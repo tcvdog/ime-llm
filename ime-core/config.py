@@ -1,7 +1,7 @@
 """Configuration for the IME prototype.
 
 Config priority (highest first):
-  1. Environment variables (LLM_API_KEY, LLM_ENDPOINT, LLM_MODEL, IME_CACHE_PATH)
+  1. Environment variables (LLM_API_KEY, LLM_ENDPOINT, LLM_MODEL)
   2. User config file (~/.config/ime-llm/config.json)
   3. Defaults
 """
@@ -17,7 +17,6 @@ _XDG_CONFIG_HOME = os.environ.get(
     "XDG_CONFIG_HOME",
     os.path.expanduser("~/.config"),
 )
-_DEFAULT_CACHE_DIR = os.path.join(_XDG_CACHE_HOME, "ime-llm")
 _USER_CONFIG_PATH = os.path.join(_XDG_CONFIG_HOME, "ime-llm", "config.json")
 
 DEFAULT_CONFIG: dict = {
@@ -27,32 +26,9 @@ DEFAULT_CONFIG: dict = {
         "api_key": "",
         "timeout": 15,
     },
-    "llm_providers": {
-        "remote": {
-            "endpoint": "https://api.deepseek.com/v1",
-            "model": "deepseek-chat",
-            "api_key": "",
-            "timeout": 15,
-        },
-        "local": {
-            "endpoint": "http://localhost:11434/v1",
-            "model": "gemma4:latest",
-            "api_key": "",
-            "timeout": 120,
-        },
-    },
-    "llm_active": "remote",
-    "cache": {
-        "context_window": 6,
-        "save_path": os.path.join(_DEFAULT_CACHE_DIR, "user_cache.json"),
-    },
-    "freq_db": {
-        "save_path": os.path.join(_DEFAULT_CACHE_DIR, "char_freq_adjustments.json"),
-    },
     "engine": {
         "max_candidates": 36,
         "page_size": 9,
-        "llm_fallback": True,
     },
 }
 
@@ -81,26 +57,12 @@ def load_config(path: str | None = None) -> dict:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # 2. Propagate legacy llm.api_key to all providers that don't have their own
-    legacy_key = cfg["llm"].get("api_key", "")
-    if legacy_key:
-        for prov in cfg.get("llm_providers", {}).values():
-            if not prov.get("api_key"):
-                prov["api_key"] = legacy_key
-
-    # 3. Environment variables override everything
+    # 2. Environment variables override everything
     if os.environ.get("LLM_API_KEY"):
         cfg["llm"]["api_key"] = os.environ["LLM_API_KEY"]
-        for prov in cfg.get("llm_providers", {}).values():
-            if not prov.get("api_key"):
-                prov["api_key"] = os.environ["LLM_API_KEY"]
     if os.environ.get("LLM_ENDPOINT"):
         cfg["llm"]["endpoint"] = os.environ["LLM_ENDPOINT"]
     if os.environ.get("LLM_MODEL"):
         cfg["llm"]["model"] = os.environ["LLM_MODEL"]
-    if os.environ.get("LLM_ACTIVE"):
-        cfg["llm_active"] = os.environ["LLM_ACTIVE"]
-    if os.environ.get("IME_CACHE_PATH"):
-        cfg["cache"]["save_path"] = os.environ["IME_CACHE_PATH"]
 
     return cfg
