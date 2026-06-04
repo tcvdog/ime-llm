@@ -1552,10 +1552,12 @@ def segment_pinyin_all(pinyin: str) -> list[tuple[list[str], float]]:
             cand = pinyin[i:end]
             if cand in SYLLABLE_MAP:
                 total_chars = len(SYLLABLE_MAP[cand])
-                # Frequency score: first chars in the list are more common
-                freq_score = 1.0 - (0.1 * (total_chars / max(total_chars, 15)))
+                # Frequency score: penalize rare syllables aggressively
+                # Common (30+ chars): ~0.94, Rare (1 char): ~0.33
+                freq_score = min(0.98, total_chars / (total_chars + 2))
                 for syllables, score, last in dp[i]:
-                    new_score = score * freq_score
+                    split_penalty = 0.97 if last and last != cand else 1.0
+                    new_score = score * freq_score * split_penalty
                     dp[end].append((syllables + [cand], new_score, cand))
 
         # Also try single-character initial expansion (简拼)
