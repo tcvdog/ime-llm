@@ -331,9 +331,9 @@ class Engine:
     def _do_rank(
         self, source: str, pinyin: str, candidates: list[str],
         context: str, user_hints: str,
-    ) -> tuple[str, str, list[str], float] | None:
+    ) -> tuple[str, str, list[str], float, int, int] | None:
         """Run ranking for a single LLM source. Runs in thread pool.
-        Returns (source, pinyin, reordered_list, latency_seconds) or None."""
+        Returns (source, pinyin, reordered_list, latency, prompt_tokens, completion_tokens) or None."""
         backend = self.ollama if source == "ollama" else self.llm
         if not backend.available:
             return None
@@ -353,15 +353,17 @@ class Engine:
             for t in trimmed:
                 if t not in result:
                     result.append(t)
-            return source, pinyin, result, total_elapsed
+            return source, pinyin, result, total_elapsed, backend._last_prompt_tokens, backend._last_completion_tokens
         else:
             # DeepSeek: convert + rank
             converted, conv_elapsed = backend.convert(
                 pinyin, context, user_hints=user_hints,
             )
+            pt1, ct1 = backend._last_prompt_tokens, backend._last_completion_tokens
             reordered, _, rank_elapsed = backend.rank(
                 pinyin, trimmed, context, user_hints=user_hints,
             )
+            pt2, ct2 = backend._last_prompt_tokens, backend._last_completion_tokens
             total_elapsed = conv_elapsed + rank_elapsed
 
             result: list[str] = []
@@ -382,12 +384,13 @@ class Engine:
                 if t not in seen:
                     result.append(t)
                     seen.add(t)
-            return source, pinyin, result, total_elapsed
+            return source, pinyin, result, total_elapsed, pt1 + pt2, ct1 + ct2
 
     def poll_results(self) -> list[tuple[str, str, list[str], float]]:
         """Check for newly completed LLM results.
 
         Returns list of (source, pinyin, reordered_list, latency) for each newly done task.
+        Also records token usage from DeepSeek responses to cumulative stats.
         """
         results = []
         for source in ("ollama", "deepseek"):
@@ -399,8 +402,12 @@ class Engine:
             try:
                 outcome = future.result()
                 if outcome:
-                    src, pinyin, reordered, latency = outcome
+                    src, pinyin, reordered, latency, pt, ct = outcome
                     results.append((src, pinyin, reordered, latency))
+                    # Record token usage for DeepSeek (Ollama local returns 0)
+                    if src == "deepseek" and (pt or ct):
+                        import token_stats
+                        token_stats.record(prompt=pt, completion=ct)
             except Exception:
                 pass
             self._applied.add(source)
@@ -608,6 +615,12 @@ class Engine:
     @context.setter
     def context(self, value: str):
         self._context = value
+
+    @staticmethod
+    def get_token_stats() -> dict:
+        """Return cumulative token usage stats (prompt_tokens, completion_tokens, calls)."""
+        import token_stats
+        return token_stats.get_stats()
 
     def reset_context(self):
         self._context = ""

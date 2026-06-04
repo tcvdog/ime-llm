@@ -515,6 +515,19 @@ class IMEBusEngine(IBus.Engine):
             elif self._engine._use_deepseek:
                 parts.append(f"D_")
 
+            # Token usage stats (compact format)
+            if self._engine._use_deepseek:
+                stats = self._engine.get_token_stats()
+                pt = stats.get("prompt_tokens", 0)
+                ct = stats.get("completion_tokens", 0)
+                def _fmt(n):
+                    if n >= 1_000_000:
+                        return f"{n/1_000_000:.1f}M"
+                    elif n >= 1_000:
+                        return f"{n/1_000:.0f}K"
+                    return str(n)
+                parts.append(f"P:{_fmt(pt)} O:{_fmt(ct)}")
+
             aux_text = " ".join(parts)
             if self._pinyin:
                 aux = IBus.Text.new_from_string(aux_text)

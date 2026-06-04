@@ -75,6 +75,8 @@ class LLMBackend:
 
         self._cache: OrderedDict[str, tuple[list[str], float]] = OrderedDict()
         self._last_result: Optional[str] = None
+        self._last_prompt_tokens: int = 0
+        self._last_completion_tokens: int = 0
 
     @property
     def available(self) -> bool:
@@ -111,9 +113,16 @@ class LLMBackend:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except Exception:
+            self._last_prompt_tokens = 0
+            self._last_completion_tokens = 0
             return None, time.time() - start
 
         elapsed = time.time() - start
+
+        # Extract token usage from response
+        usage = body.get("usage", {})
+        self._last_prompt_tokens = usage.get("prompt_tokens", 0)
+        self._last_completion_tokens = usage.get("completion_tokens", 0)
 
         try:
             output = body["choices"][0]["message"]["content"].strip()

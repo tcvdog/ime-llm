@@ -208,6 +208,14 @@ class IMEGUI:
             bg="#E0E0E0", fg="#666",
         )
         self._mode_label.pack(side="right", padx=(4, 2))
+
+        # Token stats label
+        self._token_label = tk.Label(
+            status_frame, text="", font=("Consolas", 9),
+            bg="#E0E0E0", fg="#888",
+        )
+        self._token_label.pack(side="right", padx=(4, 2))
+        self._update_token_stats()
         self._update_mode_label()
 
         self.status_var = tk.StringVar(value="\u5c31\u7eea")
@@ -444,7 +452,7 @@ class IMEGUI:
         self.status_var.set(text)
 
     def _update_source_indicator(self):
-        """Update three badges: Map ✓, Ollama ✓/◐, DeepSeek ✓/◐"""
+        """Update three badges: Map ✓, Ollama ✓/◐, DeepSeek ✓/◐, plus token stats."""
         # Map is always available
         self._map_badge.config(text="\u6620\u5c04 \u2713", bg=COLOR_MAP, fg="white")
 
@@ -481,6 +489,19 @@ class IMEGUI:
         else:
             self._mode_label.config(text=labels.get(mode, mode), fg="#666")
 
+    def _update_token_stats(self):
+        """Update token usage display in status bar."""
+        stats = Engine.get_token_stats()
+        pt = stats.get("prompt_tokens", 0)
+        ct = stats.get("completion_tokens", 0)
+        def _fmt(n):
+            if n >= 1_000_000:
+                return f"{n/1_000_000:.1f}M"
+            elif n >= 1_000:
+                return f"{n/1_000:.0f}K"
+            return str(n)
+        self._token_label.config(text=f"P:{_fmt(pt)} O:{_fmt(ct)}")
+
     def _open_settings(self):
         dialog = SettingsDialog(self.root)
         if dialog.result:
@@ -513,6 +534,7 @@ class IMEGUI:
                 self._update_candidates()
                 self._update_page_nav()
                 self._update_source_indicator()
+                self._update_token_stats()
                 src_label = "Ollama" if source == "ollama" else "DeepSeek"
                 top = refined[0] if refined else "?"
                 self._update_status(
