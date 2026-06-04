@@ -23,5 +23,8 @@ ime-core/user_cache.json
 ime-core/__pycache__/
 validate-ime/__pycache__/
 
+# OpenCode workspace files
+.omo/
+
 # Optional: keep results dir but ignore its contents
 # validate-ime/results/ can be kept for reference
