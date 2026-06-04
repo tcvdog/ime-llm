@@ -41,8 +41,19 @@ RANK_PROMPT = (
 )
 
 _CONV_PROMPT = (
-    "You are a Chinese pinyin-to-hanzi converter. "
-    "Input is pinyin syllables (space-separated or continuous) with optional context. "
+    "You are a Chinese pinyin-to-hanzi converter for a smart IME. "
+    "Input is pinyin (space-separated or continuous) with optional context.\n\n"
+    "CRITICAL: The input may contain 简拼 (shorthand initials). "
+    "Interpret single letters as common Chinese abbreviations:\n"
+    "  w → 我, n → 你/那, t → 他/她/它, d → 的/地/得,\n"
+    "  l → 了/里, h → 和/好, s → 是/上/说, m → 吗/没/么,\n"
+    "  g → 个/过/高, y → 有/也/又, b → 不/把/被,\n"
+    "  j → 就/几/叫, x → 想/下/小, z → 在/做/走,\n"
+    "  c → 吃/从/才, zh → 这/着/只, ch → 出/吃/长,\n"
+    "  sh → 是/说/上\n\n"
+    "For multi-letter abbreviations, each letter is an initial of a syllable:\n"
+    "  xh → xi huan (喜欢), wm → wo men (我们), jr → jin tian (今天),\n"
+    "  zj → zai jian (再见), mj → ming jian (明天), etc.\n\n"
     "Output ONLY the converted Chinese text — no explanation, no punctuation "
     "(unless required by the original meaning), no extra text, no English. "
     "If multiple conversions are plausible, choose the one best matching the context."

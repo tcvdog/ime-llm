@@ -399,18 +399,24 @@ class IMEGUI:
         finally:
             self.root.after(500, self._poll_llm)
 
-    def _add_llm_candidate(self, reordered: list[str]):
-        """Re-rank candidates using LLM's reordered list."""
-        if not reordered:
+    def _add_llm_candidate(self, refined: list[str]):
+        """Merge LLM refinement results into candidate list.
+
+        Handles both re-ranked pinyin_map candidates and free-form
+        LLM conversions (mixed 简拼/全拼 not in original candidates).
+        """
+        if not refined:
             return
         current_map = {t: (sc, s) for t, sc, s in self._current_candidates}
         seen: set[str] = set()
         new_list: list[tuple[str, float, str]] = []
-        for t in reordered:
-            if t not in seen and t in current_map:
-                sc, _ = current_map[t]
+        # LLM order first — mark as "llm" source
+        for t in refined:
+            if t not in seen:
+                sc = current_map.get(t, (1.0,))[0]
                 new_list.append((t, sc, "llm"))
                 seen.add(t)
+        # Append candidates LLM missed (preserve original source)
         for t, sc, s in self._current_candidates:
             if t not in seen:
                 new_list.append((t, sc, s))

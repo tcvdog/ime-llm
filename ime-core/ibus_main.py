@@ -464,28 +464,28 @@ class IMEBusEngine(IBus.Engine):
             log.error("_update_ui failed: %s", exc, exc_info=True)
 
     def _on_poll_llm(self) -> bool:
-        """Periodically check for async LLM re-rank results."""
+        """Periodically check for async LLM refinement results."""
         try:
             result = self._engine.llm_refine()
             if result:
-                pinyin, reordered, latency = result
-                if pinyin == self._pinyin and reordered:
+                pinyin, refined, latency = result
+                if pinyin == self._pinyin and refined:
                     current_map = {t: s for t, s in self._candidates}
                     new_list: list[tuple[str, str]] = []
                     seen: set[str] = set()
-                    # LLM order first — mark source as "llm" for visual feedback
-                    for text in reordered:
-                        if text not in seen and text in current_map:
+                    # LLM order first — mark as "llm" source
+                    for text in refined:
+                        if text not in seen:
                             new_list.append((text, "llm"))
                             seen.add(text)
-                    # Append candidates LLM didn't re-rank (original source)
+                    # Append candidates LLM missed (preserve original source)
                     for t, s in self._candidates:
                         if t not in seen:
                             new_list.append((t, s))
                             seen.add(t)
                     self._candidates = new_list
                     self._update_ui()
-                    log.info("LLM re-rank: %d candidates (%.0fms)", len(reordered), latency * 1000)
+                    log.info("LLM refine: %d candidates (%.0fms)", len(refined), latency * 1000)
         except Exception as exc:
             log.error("_on_poll_llm crashed: %s", exc, exc_info=True)
         return True

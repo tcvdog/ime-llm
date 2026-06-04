@@ -68,7 +68,12 @@ class Engine:
 
     def llm_refine(self) -> Optional[tuple[str, list[str], float]]:
         """
-        Called asynchronously to re-rank candidates via LLM.
+        Called asynchronously to refine candidates via LLM.
+
+        Uses convert() for free-form pinyin interpretation (handles
+        mixed 简拼/全拼/fuzzy), then rank() to re-order pinyin_map
+        candidates. Combines both: convert result first (if any),
+        followed by ranked pinyin_map candidates (deduped).
 
         Returns (pinyin, reordered_texts, latency_ms) or None.
         """
@@ -78,11 +83,38 @@ class Engine:
         pinyin, candidates, context = self._pending_llm
         self._pending_llm = None
 
-        reordered, _, elapsed = self.llm.rank(pinyin, candidates, context)
-        if reordered is None:
+        # 1. Free-form LLM conversion (handles mixed/简拼/fuzzy pinyin)
+        converted, conv_elapsed = self.llm.convert(pinyin, context)
+
+        # 2. Re-rank pinyin_map candidates (for supplementary ordering)
+        reordered, _, rank_elapsed = self.llm.rank(pinyin, candidates, context)
+        total_elapsed = conv_elapsed + rank_elapsed
+
+        # 3. Combine: convert result first, then ranked candidates (dedup)
+        result: list[str] = []
+        seen: set[str] = set()
+
+        if converted:
+            for t in converted.split():
+                if t not in seen:
+                    result.append(t)
+                    seen.add(t)
+
+        if reordered:
+            for t in reordered:
+                if t not in seen:
+                    result.append(t)
+                    seen.add(t)
+        elif not converted:
             return None
 
-        return pinyin, reordered, elapsed
+        # Append any pinyin_map candidates the LLM missed
+        for t in candidates:
+            if t not in seen:
+                result.append(t)
+                seen.add(t)
+
+        return pinyin, result, total_elapsed
 
     @property
     def context(self) -> str:
