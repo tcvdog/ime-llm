@@ -494,13 +494,10 @@ class IMEGUI:
         stats = Engine.get_token_stats()
         pt = stats.get("prompt_tokens", 0)
         ct = stats.get("completion_tokens", 0)
-        def _fmt(n):
-            if n >= 1_000_000:
-                return f"{n/1_000_000:.1f}M"
-            elif n >= 1_000:
-                return f"{n/1_000:.0f}K"
-            return str(n)
-        self._token_label.config(text=f"P:{_fmt(pt)} O:{_fmt(ct)}")
+        if pt or ct:
+            self._token_label.config(text=f"P:{pt} O:{ct}")
+        else:
+            self._token_label.config(text="")
 
     def _open_settings(self):
         dialog = SettingsDialog(self.root)
