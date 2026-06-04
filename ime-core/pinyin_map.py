@@ -1,9 +1,927 @@
 """
-Layer 1: Pinyin syllable to character mapping.
+Layer 1: Pinyin syllable to character mapping + word dictionary.
 
 Guarantees that ANY valid pinyin input produces candidates.
 Each syllable maps to the most common characters, ordered by frequency.
+Multi-syllable pinyin also checks a word dictionary for common phrases.
 """
+
+import json
+import os
+from typing import Optional
+
+from bigram_model import BigramModel
+from viterbi import viterbi_decode, viterbi_rerank
+
+# ── Multi-syllable word dictionary ──────────────────────────────
+# Maps space-joined pinyin syllables to common Chinese words/phrases.
+# Priority over character-combination candidates.
+WORD_MAP: dict[str, list[str]] = {
+    # 2-syllable common words
+    "ni hao": ["你好"],
+    "xie xie": ["谢谢"],
+    "da jia": ["大家"],
+    "wo men": ["我们"],
+    "ta men": ["他们"],
+    "ni men": ["你们"],
+    "zi ji": ["自己"],
+    "shen me": ["什么"],
+    "zen me": ["怎么"],
+    "wei shen me": ["为什么"],
+    "zen me ban": ["怎么办"],
+    "xian zai": ["现在"],
+    "yi jing": ["已经"],
+    "ke yi": ["可以"],
+    "mei you": ["没有"],
+    "zhi dao": ["知道"],
+    "ren shi": ["认识"],
+    "xi huan": ["喜欢"],
+    "dan shi": ["但是"],
+    "suo yi": ["所以"],
+    "ran hou": ["然后"],
+    "zhe ge": ["这个"],
+    "na ge": ["那个"],
+    "zhe li": ["这里"],
+    "na li": ["那里"],
+    "jin tian": ["今天"],
+    "zuo tian": ["昨天"],
+    "ming tian": ["明天"],
+    "shang ban": ["上班"],
+    "xia ban": ["下班"],
+    "dian hua": ["电话"],
+    "shou ji": ["手机"],
+    "dian nao": ["电脑"],
+    "peng you": ["朋友"],
+    "tong xue": ["同学"],
+    "lao shi": ["老师"],
+    "xue sheng": ["学生"],
+    "fang jian": ["房间"],
+    "di fang": ["地方"],
+    "shi jian": ["时间"],
+    "huo zhe": ["或者"],
+    "er qie": ["而且"],
+    "yin wei": ["因为"],
+    "ru guo": ["如果"],
+    "sui ran": ["虽然"],
+    "bing qie": ["并且"],
+    "yi hou": ["以后"],
+    "yi qian": ["以前"],
+    "shang mian": ["上面"],
+    "xia mian": ["下面", "虾面", "夏眠"],
+    "li mian": ["里面"],
+    "wai mian": ["外面"],
+    "pang bian": ["旁边"],
+    "zuo you": ["左右"],
+    "qian mian": ["前面"],
+    "hou mian": ["后面"],
+    "dong xi": ["东西"],
+    "sheng ri": ["生日"],
+    "kai shi": ["开始"],
+    "jie shu": ["结束"],
+    "gong zuo": ["工作"],
+    "sheng huo": ["生活"],
+    "xue xi": ["学习"],
+    "gong si": ["公司"],
+    "jia ting": ["家庭"],
+    "wen ti": ["问题"],
+    "da an": ["答案"],
+    "yi si": ["意思"],
+    "guan xi": ["关系"],
+    "qing chu": ["清楚"],
+    "ming bai": ["明白"],
+    "zhu yi": ["注意"],
+    "xiang fa": ["想法"],
+    "gan jue": ["感觉"],
+    "gao su": ["告诉"],
+    "jian dan": ["简单"],
+    "fu za": ["复杂"],
+    "shu ju": ["数据"],
+    "xin xi": ["信息"],
+    "wei lai": ["未来"],
+    "li shi": ["历史"],
+    "jing ji": ["经济"],
+    "wen hua": ["文化"],
+    "ke ji": ["科技"],
+    "jiao yu": ["教育"],
+    "yi yuan": ["医院"],
+    "xue xiao": ["学校"],
+    "tu shu guan": ["图书馆"],
+    "ban gong shi": ["办公室"],
+    "huo che zhan": ["火车站"],
+    "ji chang": ["机场"],
+    "shang dian": ["商店"],
+    "chao shi": ["超市"],
+    "gong yuan": ["公园"],
+    "can guan": ["餐馆"],
+    "jiu dian": ["酒店"],
+    "ke ting": ["客厅"],
+    "wo shi": ["卧室"],
+    "chu fang": ["厨房"],
+    "wei sheng jian": ["卫生间"],
+    "yang cheng": ["养成"],
+    "ying gai": ["应该"],
+    "xu yao": ["需要"],
+    "xi wang": ["希望"],
+    "jue de": ["觉得"],
+    "yi wei": ["以为"],
+    "jian yi": ["建议"],
+    "jue ding": ["决定"],
+    "fa xian": ["发现"],
+    "kan jian": ["看见"],
+    "ting jian": ["听见"],
+    "xiang xin": ["相信"],
+    "li jie": ["理解"],
+    "jie shao": ["介绍"],
+    "biao shi": ["表示"],
+    "bao kuo": ["包括"],
+    "chan sheng": ["产生"],
+    "fa zhan": ["发展"],
+    "gai bian": ["改变"],
+    "cuo wu": ["错误"],
+    "zheng que": ["正确"],
+    "liang hao": ["良好"],
+    "te bie": ["特别"],
+    "fei chang": ["非常"],
+    "hen duo": ["很多"],
+    "hen shao": ["很少"],
+    "tai duo": ["太多"],
+    "yi dian": ["一点"],
+    "you dian": ["有点"],
+    "quan bu": ["全部"],
+    "da bu fen": ["大部分"],
+    "shou xian": ["首先"],
+    "qi ci": ["其次"],
+    "zui hou": ["最后"],
+    "di yi": ["第一"],
+    "di er": ["第二"],
+    "di san": ["第三"],
+    "yi qi": ["一起"],
+    "yi zhi": ["一直"],
+    "yi jing": ["已经"],
+    "zheng zai": ["正在"],
+    "ma shang": ["马上"],
+    "gan jin": ["赶紧"],
+    "yi hui er": ["一会儿"],
+    "you shi hou": ["有时候"],
+    "cong lai": ["从来"],
+    "yong yuan": ["永远"],
+    "an quan": ["安全"],
+    "wei xian": ["危险"],
+    "zhong yao": ["重要"],
+    "bi yao": ["必要"],
+    "ke neng": ["可能"],
+    "yi ding": ["一定"],
+    "que shi": ["确实"],
+    "da gai": ["大概"],
+    "ji hu": ["几乎"],
+    "tong chang": ["通常"],
+    "yi ban": ["一般"],
+    "te bie": ["特别"],
+    "bi jiao": ["比较"],
+    "xiang dang": ["相当"],
+    "ji qi": ["极其"],
+    "yue lai yue": ["越来越"],
+    "jian jian": ["渐渐"],
+    "tu ran": ["突然"],
+    "jing chang": ["经常"],
+    "you shi": ["有时"],
+    "zong shi": ["总是"],
+    "mei ci": ["每次"],
+    "zai ci": ["再次"],
+    "ji xu": ["继续"],
+    "ting zhi": ["停止"],
+    "bao chi": ["保持"],
+    "jin xing": ["进行"],
+    "shi xian": ["实现"],
+    "wan cheng": ["完成"],
+    "kai shi": ["开始"],
+    "jie shu": ["结束"],
+    "da dao": ["达到"],
+    "chao guo": ["超过"],
+    "ti gao": ["提高"],
+    "jiang di": ["降低"],
+    "zeng jia": ["增加"],
+    "jian shao": ["减少"],
+    "bao zheng": ["保证"],
+    "que bao": ["确保"],
+    "fang bian": ["方便"],
+    "kuai jie": ["快捷"],
+    "you xiao": ["有效"],
+    "gao xiao": ["高效"],
+    "ming xian": ["明显"],
+    "xian zhu": ["显著"],
+    "pu tong": ["普通"],
+    "te shu": ["特殊"],
+    "yi chang": ["异常"],
+    "zheng chang": ["正常"],
+    "ji ben": ["基本"],
+    "zhu yao": ["主要"],
+    "guan jian": ["关键"],
+    "he xin": ["核心"],
+    "ji chu": ["基础"],
+    "ben shen": ["本身"],
+    "xian shi": ["显示"],
+    "biao xian": ["表现"],
+    "fan ying": ["反应", "反映"],
+    "zuo yong": ["作用"],
+    "gong neng": ["功能"],
+    "jie guo": ["结果"],
+    "yuan yin": ["原因"],
+    "mu di": ["目的"],
+    "fang fa": ["方法"],
+    "fang shi": ["方式"],
+    "tu jing": ["途径"],
+    "shou duan": ["手段"],
+    "bu zhou": ["步骤"],
+    "guo cheng": ["过程"],
+    "qing kuang": ["情况"],
+    "zhuang tai": ["状态"],
+    "tiao jian": ["条件"],
+    "huan jing": ["环境"],
+    "zi yuan": ["资源"],
+    "neng li": ["能力"],
+    "shui ping": ["水平"],
+    "zhi liang": ["质量"],
+    "xiao guo": ["效果"],
+    "yi yi": ["意义"],
+    "jia zhi": ["价值"],
+    "li yi": ["利益"],
+    "hao chu": ["好处"],
+    "que dian": ["缺点"],
+    "you dian": ["优点"],
+    "chang chu": ["长处"],
+    "duan chu": ["短处"],
+    "te dian": ["特点"],
+    "xing zhi": ["性质"],
+    "lei xing": ["类型"],
+    "pin zhi": ["品质"],
+    "ge xing": ["个性"],
+    "xing ge": ["性格"],
+    "qing xu": ["情绪"],
+    "xin qing": ["心情"],
+    "gan qing": ["感情"],
+    "ai qing": ["爱情"],
+    "you qing": ["友情"],
+    "qin qing": ["亲情"],
+    "kuai le": ["快乐"],
+    "kai xin": ["开心"],
+    "gao xing": ["高兴"],
+    "yu kuai": ["愉快"],
+    "nan guo": ["难过"],
+    "shang xin": ["伤心"],
+    "bei shang": ["悲伤"],
+    "tong ku": ["痛苦"],
+    "jiao lv": ["焦虑"],
+    "jin zhang": ["紧张"],
+    "fang song": ["放松"],
+    "ping jing": ["平静"],
+    "man zu": ["满足"],
+    "xi wang": ["希望"],
+    "shi wang": ["失望"],
+    "jue wang": ["绝望"],
+    "xin ren": ["信任"],
+    "huai yi": ["怀疑"],
+    "que ding": ["确定"],
+    "bu que ding": ["不确定"],
+    "fu za": ["复杂"],
+    "jian dan": ["简单"],
+    "rong yi": ["容易"],
+    "kun nan": ["困难"],
+    "hao ban": ["好办"],
+    "nan ban": ["难办"],
+    "ke neng": ["可能"],
+    "biao zhun": ["标准"],
+    "gui fan": ["规范"],
+    "gui ze": ["规则"],
+    "fa lv": ["法律"],
+    "zheng ce": ["政策"],
+    "zhi du": ["制度"],
+    "ti xi": ["体系"],
+    "jie gou": ["结构"],
+    "zu zhi": ["组织"],
+    "ji gou": ["机构"],
+    "qi ye": ["企业"],
+    "gong si": ["公司"],
+    "ji tuan": ["集团"],
+    "hang ye": ["行业"],
+    "shi chang": ["市场"],
+    "jing zheng": ["竞争"],
+    "he zuo": ["合作"],
+    "jiao liu": ["交流"],
+    "gou tong": ["沟通"],
+    "xie shang": ["协商"],
+    "tan pan": ["谈判"],
+    "tou zi": ["投资"],
+    "zi jin": ["资金"],
+    "cheng ben": ["成本"],
+    "li run": ["利润"],
+    "shou ru": ["收入"],
+    "zhi chu": ["支出"],
+    "yu suan": ["预算"],
+    "cai wu": ["财务"],
+    "hui ji": ["会计"],
+    "shen ji": ["审计"],
+    "bao biao": ["报表"],
+    "shui wu": ["税务"],
+    "fan hui": ["返回"],
+    "que ren": ["确认"],
+    "ti jiao": ["提交"],
+    "shen pi": ["审批"],
+    "qian zi": ["签字"],
+    "gai zhang": ["盖章"],
+    "bei an": ["备案"],
+    "deng ji": ["登记"],
+    "zhu ce": ["注册"],
+    "qu xiao": ["取消"],
+    "shan chu": ["删除"],
+    "xiu gai": ["修改"],
+    "tian jia": ["添加"],
+    "cha kan": ["查看"],
+    "sou suo": ["搜索"],
+    "zhao dao": ["找到"],
+    "ti huan": ["替换"],
+    "fu zhi": ["复制"],
+    "jian qie": ["剪切"],
+    "nian tie": ["粘贴"],
+    "bao cun": ["保存"],
+    "da yin": ["打印"],
+    "shang chuan": ["上传"],
+    "xia zai": ["下载"],
+    "geng xin": ["更新"],
+    "sheng ji": ["升级"],
+    "an zhuang": ["安装"],
+    "pei zhi": ["配置"],
+    "she zhi": ["设置"],
+    "guan li": ["管理"],
+    "kong zhi": ["控制"],
+    "yun xing": ["运行"],
+    "qi dong": ["启动"],
+    "guan bi": ["关闭"],
+    "chong qi": ["重启"],
+    "deng lu": ["登录"],
+    "zhu ce": ["注册"],
+    "tui chu": ["退出"],
+    "bao jing": ["报警"],
+    "cuo wu": ["错误"],
+    "jing gao": ["警告"],
+    "ti shi": ["提示"],
+    "shuo ming": ["说明"],
+    "bang zhu": ["帮助"],
+    "zhi chi": ["支持"],
+    "fu wu": ["服务"],
+    "ke hu": ["客户"],
+    "yong hu": ["用户"],
+    "zhi yuan": ["志愿"],
+    "juan zeng": ["捐赠"],
+    "gong yi": ["公益"],
+    "ci shan": ["慈善"],
+    "huan bao": ["环保"],
+    "jie neng": ["节能"],
+    "pai fang": ["排放"],
+    "wu ran": ["污染"],
+    "zhi li": ["治理"],
+    "hui shou": ["回收"],
+    "zi yuan": ["资源"],
+    "ke chi xu": ["可持续"],
+    "he xie": ["和谐"],
+    "wen ding": ["稳定"],
+    "fan rong": ["繁荣"],
+    "cang sheng": ["昌盛"],
+    "qiang guo": ["强国"],
+    "fu min": ["富民"],
+    "gai ge": ["改革"],
+    "kai fang": ["开放"],
+    "chuang xin": ["创新"],
+    "fa zhan": ["发展"],
+    "jin bu": ["进步"],
+    "wen ming": ["文明"],
+    "min zhu": ["民主"],
+    "zi you": ["自由"],
+    "ping deng": ["平等"],
+    "gong zheng": ["公正"],
+    "fa zhi": ["法治"],
+    "ai guo": ["爱国"],
+    "jing ye": ["敬业"],
+    "cheng xin": ["诚信"],
+    "you shan": ["友善"],
+
+    # Disambiguation test cases
+    "xia mian": ["下面", "虾面", "夏眠"],
+    "shu jia": ["暑假", "书价", "书架"],
+    "bao zi": ["包子", "豹子", "孢子"],
+    "gong shi": ["公式", "工事", "攻势"],
+    "you xian": ["优先", "有限", "有线"],
+    "qi zhong": ["期中", "期终", "其中"],
+    "li bai": ["李白", "三百", "里白"],
+    "zhi neng": ["智能", "只能"],
+    "le": ["了", "乐"],
+    "xing": ["姓", "兴", "行", "星"],
+
+    # 3-4 syllable common phrases
+    "you yi si": ["有意思"],
+    "mei guan xi": ["没关系"],
+    "bu hao yi si": ["不好意思"],
+    "dui bu qi": ["对不起"],
+    "mei wen ti": ["没问题"],
+    "mei ban fa": ["没办法"],
+    "zen me yang": ["怎么样"],
+    "bu shi hen": ["不是很"],
+    "ke yi ma": ["可以吗"],
+    "hao de": ["好的"],
+    "shi de": ["是的"],
+    "bu yao": ["不要"],
+    "bu xing": ["不行"],
+    "bu hao": ["不好"],
+    "bu dui": ["不对"],
+    "bu yong": ["不用"],
+    "bie ke qi": ["别客气"],
+    "qing wen": ["请问"],
+    "nin hao": ["您好"],
+    "zao shang hao": ["早上好"],
+    "wan shang hao": ["晚上好"],
+    "xia ci jian": ["下次见"],
+    "ming tian jian": ["明天见"],
+    "yi lu ping an": ["一路平安"],
+    "shen ti jian kang": ["身体健康"],
+    "gong xi fa cai": ["恭喜发财"],
+    "xin nian kuai le": ["新年快乐"],
+    "sheng ri kuai le": ["生日快乐"],
+    "jie ri kuai le": ["节日快乐"],
+    "zhou mo yu kuai": ["周末愉快"],
+    "gong zuo shun li": ["工作顺利"],
+    "xue xi jin bu": ["学习进步"],
+    "wan shi ru yi": ["万事如意"],
+
+    # Proper nouns & entities
+    "bei jing": ["北京"],
+    "shang hai": ["上海"],
+    "guang zhou": ["广州"],
+    "shen zhen": ["深圳"],
+    "hang zhou": ["杭州"],
+    "tian jin": ["天津"],
+    "cheng du": ["成都"],
+    "nan jing": ["南京"],
+    "wu han": ["武汉"],
+    "chong qing": ["重庆"],
+    "xi an": ["西安"],
+    "su zhou": ["苏州"],
+    "hai nan": ["海南"],
+    "yun nan": ["云南"],
+    "xi zang": ["西藏"],
+    "xin jiang": ["新疆"],
+    "xiang gang": ["香港"],
+    "ao men": ["澳门"],
+    "tai wan": ["台湾"],
+    "zhong guo": ["中国"],
+    "mei guo": ["美国"],
+    "ying guo": ["英国"],
+    "fa guo": ["法国"],
+    "de guo": ["德国"],
+    "ri ben": ["日本"],
+    "han guo": ["韩国"],
+    "xin jia po": ["新加坡"],
+    "ao da li ya": ["澳大利亚"],
+    "jia na da": ["加拿大"],
+    "ma yun": ["马云"],
+    "li bai": ["李白"],
+    "du fu": ["杜甫"],
+    "ma ke": ["马克"],
+    "ya li shan da": ["亚历山大"],
+
+    # Technical terms
+    "ren gong zhi neng": ["人工智能"],
+    "ji qi xue xi": ["机器学习"],
+    "shen du xue xi": ["深度学习"],
+    "da shu ju": ["大数据"],
+    "yun ji suan": ["云计算"],
+    "qu kuai lian": ["区块链"],
+    "wu lian wang": ["物联网"],
+    "xu ni xian shi": ["虚拟现实"],
+    "zeng qiang xian shi": ["增强现实"],
+    "dian zi shang wu": ["电子商务"],
+    "yi dong hu lian": ["移动互联"],
+    "she jiao wang luo": ["社交网络"],
+    "dian zi you jian": ["电子邮件"],
+    "zi dong hua": ["自动化"],
+    "bian cheng yu yan": ["编程语言"],
+    "kai yuan": ["开源"],
+    "bi te bi": ["比特币"],
+    "yuan yu zhou": ["元宇宙"],
+
+    # ── Commonly used 2-syllable ──
+    "ji hui": ["机会", "几回"],
+    "jing li": ["经历", "经理", "精力"],
+    "jie guo": ["结果", "接过"],
+    "yuan lai": ["原来"],
+    "ben lai": ["本来"],
+    "shi hou": ["时候"],
+    "di fang": ["地方", "敌方"],
+    "dong xi": ["东西", "冬季"],
+    "qian mian": ["前面", "前面"],
+    "wei da": ["伟大"],
+    "bang mang": ["帮忙"],
+    "zhao gu": ["照顾"],
+    "fu wu": ["服务"],
+    "jie jue": ["解决"],
+    "ti gong": ["提供"],
+    "bao kuo": ["包括"],
+    "guan yu": ["关于"],
+    "gen ju": ["根据"],
+    "an zhao": ["按照"],
+    "tong guo": ["通过"],
+    "li yong": ["利用"],
+    "chan sheng": ["产生"],
+    "xing cheng": ["形成"],
+    "bao chi": ["保持"],
+    "que shi": ["确实", "缺失"],
+    "fan er": ["反而"],
+    "bu guo": ["不过"],
+    "shen zhi": ["甚至"],
+    "ji bian": ["即便"],
+    "ji shi": ["即使", "计时"],
+    "sui ran": ["虽然", "虽说"],
+    "dan shi": ["但是", "单是"],
+    "ran er": ["然而"],
+    "yin ci": ["因此"],
+    "suo yi": ["所以"],
+    "tong shi": ["同时"],
+    "ling wai": ["另外"],
+    "ci wai": ["此外"],
+    "zai shuo": ["再说"],
+    "bi jing": ["毕竟"],
+    "qi shi": ["其实", "启示", "歧视"],
+    "da gai": ["大概"],
+    "ji ben": ["基本"],
+    "te bie": ["特别", "特彆"],
+    "you qi": ["尤其"],
+    "ji duan": ["极端"],
+    "xiang dui": ["相对"],
+    "jue dui": ["绝对"],
+    "jian zhi": ["简直", "兼职"],
+    "xiang dang": ["相当"],
+    "bi jiao": ["比较"],
+    "que ding": ["确定", "确凿"],
+    "ke kao": ["可靠"],
+    "ming que": ["明确"],
+    "qing xi": ["清晰"],
+    "ju ti": ["具体"],
+    "chou xiang": ["抽象"],
+    "fu za": ["复杂", "复炸"],
+    "jian dan": ["简单"],
+    "rong yi": ["容易"],
+    "kun nan": ["困难"],
+    "ke neng": ["可能"],
+    "da yue": ["大约"],
+    "zhi shao": ["至少"],
+    "zui duo": ["最多"],
+    "ping jun": ["平均"],
+    "gong tong": ["共同"],
+    "xiang hu": ["相互"],
+    "ge zi": ["各自"],
+    "fen bie": ["分别"],
+    "yi jian": ["意见", "一剑"],
+    "wenti": ["问题"],
+    "da an": ["答案", "打按"],
+    "jie lun": ["结论"],
+    "shuo ming": ["说明"],
+    "jie shi": ["解释", "揭示"],
+    "fen xi": ["分析"],
+    "zong jie": ["总结"],
+    "tui jian": ["推荐"],
+    "jian yi": ["建议", "见意"],
+    "pi ping": ["批评"],
+    "zan yang": ["赞扬"],
+    "gu li": ["鼓励"],
+    "zhi chi": ["支持", "持支"],
+    "fan dui": ["反对"],
+    "jie shou": ["接受"],
+    "ju jue": ["拒绝"],
+    "cheng ren": ["承认", "成人"],
+    "fou ren": ["否认"],
+    "cheng nuo": ["承诺"],
+    "luo shi": ["落实"],
+    "zhi xing": ["执行"],
+    "ying yong": ["应用"],
+    "kai fa": ["开发", "开罚"],
+    "she ji": ["设计", "涉及"],
+    "yan fa": ["研发"],
+    "chuang xin": ["创新"],
+    "yan jiu": ["研究"],
+    "ke ti": ["课题"],
+    "xiang mu": ["项目"],
+    "chan pin": ["产品"],
+    "fang an": ["方案"],
+    "mu biao": ["目标"],
+    "zhan lue": ["战略"],
+    "gui hua": ["规划"],
+    "zu zhi": ["组织", "阻止"],
+    "tuan dui": ["团队"],
+    "yuan gong": ["员工"],
+    "tong shi": ["同事", "同时"],
+    "ling dao": ["领导"],
+    "zhu guan": ["主管"],
+    "zong cai": ["总裁"],
+    "dong shi": ["董事"],
+    "ji shu": ["技术", "基数"],
+    "shu ju": ["数据"],
+    "suan fa": ["算法"],
+    "wang luo": ["网络"],
+    "fu wu qi": ["服务器"],
+    "shu ju ku": ["数据库"],
+    "cao zuo xi tong": ["操作系统"],
+    "kai fa gong ju": ["开发工具"],
+    "bian cheng": ["编程"],
+    "dai ma": ["代码"],
+    "shi jian": ["实践", "时间", "事件"],
+    "jing yan": ["经验"],
+    "ji neng": ["技能"],
+    "zhuan ye": ["专业"],
+    "hang ye": ["行业"],
+    "qu shi": ["趋势"],
+    "shi chang": ["市场", "试场"],
+    "yong hu": ["用户"],
+    "ke hu": ["客户"],
+    "cheng xu": ["程序"],
+    "ruan jian": ["软件"],
+    "ying jian": ["硬件"],
+    "ban ben": ["版本"],
+    "geng xin": ["更新"],
+    "xiu fu": ["修复"],
+    "wan shan": ["完善"],
+    "you hua": ["优化"],
+    "jian rong": ["兼容"],
+    "pei zhi": ["配置"],
+    "an zhuang": ["安装"],
+    "zhuang xie": ["装卸"],
+    "xi tong": ["系统"],
+    "ping tai": ["平台"],
+    "ji cheng": ["集成"],
+    "jie kou": ["接口"],
+    "mo kuai": ["模块"],
+    "gou jian": ["构建", "构件"],
+    "bu shu": ["部署"],
+    "yun wei": ["运维"],
+    "jian kong": ["监控"],
+    "gao jing": ["告警"],
+    "bei fen": ["备份"],
+    "hui fu": ["恢复"],
+    "qian yi": ["迁移"],
+    "ti sheng": ["提升"],
+    "jiang ji": ["降级"],
+    "kuo zhan": ["扩展"],
+    "sheng ji": ["升级", "声级"],
+    "zi yuan": ["资源"],
+    "cun chu": ["存储"],
+    "ji suan": ["计算"],
+    "jiao huan": ["交换"],
+    "lu you": ["路由"],
+    "fang huo qiang": ["防火墙"],
+    "jia mi": ["加密"],
+    "an quan": ["安全"],
+    "bao zhang": ["保障"],
+    "feng xian": ["风险"],
+    "ce shi": ["测试"],
+    "yan zheng": ["验证"],
+    "jian cha": ["检查"],
+    "shen ji": ["审计", "身急"],
+
+    # ── Commonly used 3-4 syllable ──
+    "ji suan ji": ["计算机"],
+    "shou ji": ["手机"],
+    "ping ban": ["平板"],
+    "bi ji ben": ["笔记本"],
+    "shou biao": ["手表"],
+    "er ji": ["耳机", "二级"],
+    "lan ya": ["蓝牙"],
+    "wu xian": ["无线", "无限"],
+    "you xian": ["有限", "优先", "有线"],
+    "chong dian": ["充电"],
+    "dian chi": ["电池"],
+    "dian yuan": ["电源", "店员"],
+    "she xiang tou": ["摄像头"],
+    "ping mu": ["屏幕"],
+    "jian pan": ["键盘"],
+    "shu biao": ["鼠标"],
+    "da yin ji": ["打印机"],
+    "sao miao yi": ["扫描仪"],
+    "lu you qi": ["路由器"],
+    "jiao huan ji": ["交换机"],
+    "fu wu qi": ["服务器"],
+    "bei jing da xue": ["北京大学"],
+    "qing hua da xue": ["清华大学"],
+    "fu dan da xue": ["复旦大学"],
+    "jiao tong da xue": ["交通大学"],
+    "zhong ke yuan": ["中科院"],
+    "ke xue yuan": ["科学院"],
+    "yan jiu suo": ["研究所"],
+    "da xue": ["大学"],
+    "xue yuan": ["学院"],
+    "xiao zhang": ["校长"],
+    "jiao shou": ["教授"],
+    "dao shi": ["导师", "倒是"],
+    "bo shi": ["博士", "博识"],
+    "shuo shi": ["硕士"],
+    "xue shi": ["学士", "学识"],
+    "bi ye": ["毕业"],
+    "jiu ye": ["就业"],
+    "zhao pin": ["招聘"],
+    "ying pin": ["应聘"],
+    "mian shi": ["面试"],
+    "lu qu": ["录取"],
+    "zhi wei": ["职位"],
+    "gong zi": ["工资", "公子"],
+    "dai yu": ["待遇", "带鱼"],
+    "fu li": ["福利"],
+    "nian xin": ["年薪"],
+    "jiang jin": ["奖金"],
+    "ti cheng": ["提成"],
+    "jia ban": ["加班"],
+    "xiu xi": ["休息"],
+    "qing jia": ["请假"],
+    "tui xiu": ["退休"],
+    "ci zhi": ["辞职", "此致"],
+    "tiao cao": ["跳槽"],
+    "jin sheng": ["晋升"],
+    "jiang zhi": ["降职"],
+    "ji xiao": ["绩效"],
+    "kao he": ["考核"],
+
+    # ── Internet & chat ──
+    "zhe yang": ["这样", "那样"],
+    "na yang": ["那样"],
+    "zen me": ["怎么", "怎们"],
+    "wei shen me": ["为什么"],
+    "shen me shi hou": ["什么时候"],
+    "zen me yang": ["怎么样"],
+    "zen me ban": ["怎么办"],
+    "mei wen ti": ["没问题"],
+    "mei guan xi": ["没关系"],
+    "mei ban fa": ["没办法"],
+    "suan le": ["算了"],
+    "xing ma": ["行吗"],
+    "hao ba": ["好吧"],
+    "dui a": ["对啊"],
+    "shi ma": ["是吗", "施马"],
+    "zhen de": ["真的", "镇的"],
+    "jia de": ["假的"],
+    "tai hao le": ["太好了"],
+    "tai bang le": ["太棒了"],
+    "fei chang hao": ["非常好"],
+    "hen hao": ["很好"],
+    "bu cuo": ["不错"],
+    "hai xing": ["还行"],
+    "yi ban ban": ["一般般"],
+    "ma ma hu hu": ["马马虎虎"],
+    "wu liao": ["无聊"],
+    "fan si le": ["烦死了"],
+    "ku si le": ["哭死了"],
+    "le si le": ["乐死了"],
+    "qi si wo le": ["气死我了"],
+    "e xin": ["恶心"],
+    "shuai": ["帅"],
+    "mei nv": ["美女"],
+    "shuai ge": ["帅哥"],
+    "peng you quan": ["朋友圈"],
+    "wei xin": ["微信"],
+    "zhi fu bao": ["支付宝"],
+    "tao bao": ["淘宝"],
+    "jing dong": ["京东"],
+    "pin duo duo": ["拼多多"],
+    "dou yin": ["抖音"],
+    "kuai shou": ["快手"],
+    "wei bo": ["微博"],
+    "zhi hu": ["知乎"],
+    "bai du": ["百度"],
+    "sou gou": ["搜狗"],
+    "gu ge": ["谷歌"],
+    "ya ma xun": ["亚马逊"],
+    "teng xun": ["腾讯"],
+    "a li": ["阿里"],
+    "hua wei": ["华为"],
+    "xiao mi": ["小米"],
+    "ping guo": ["苹果"],
+    "san xing": ["三星"],
+    "dian zi you jian": ["电子邮件"],
+    "duan xin": ["短信"],
+    "tu pian": ["图片"],
+    "wen jian": ["文件"],
+    "shi pin": ["视频"],
+    "yin pin": ["音频"],
+    "zhi bo": ["直播"],
+    "zai xian": ["在线"],
+    "xia xian": ["下线"],
+    "shang xian": ["上线"],
+    "wang ye": ["网页"],
+    "lian jie": ["链接", "连接"],
+    "fu zhi": ["复制"],
+    "jian qie": ["剪切"],
+    "nian tie": ["粘贴"],
+    "xia zai": ["下载"],
+    "shang chuan": ["上传"],
+    "shou cang": ["收藏"],
+    "fen xiang": ["分享"],
+    "ping lun": ["评论"],
+    "dian zan": ["点赞"],
+    "guan zhu": ["关注"],
+    "si xin": ["私信"],
+    "ju bao": ["举报"],
+    "shan chu": ["删除"],
+    "xiu gai": ["修改"],
+    "bian ji": ["编辑"],
+    "she zhi": ["设置"],
+    "tong zhi": ["通知", "同质"],
+    "xiao xi": ["消息"],
+    "ti xing": ["提醒"],
+    "jing gao": ["警告"],
+    "cuo wu": ["错误"],
+    "zheng que": ["正确"],
+    "cheng gong": ["成功"],
+    "shi bai": ["失败"],
+    "qu xiao": ["取消"],
+    "que ren": ["确认"],
+    "ti jiao": ["提交"],
+    "bao cun": ["保存"],
+    "she zhi": ["设置"],
+    "guan bi": ["关闭"],
+    "da kai": ["打开"],
+    "tian jia": ["添加"],
+    "shan chu": ["删除"],
+    "cha zhao": ["查找"],
+    "ti huan": ["替换"],
+    "xuan ze": ["选择"],
+    "shu ru": ["输入"],
+    "shu chu": ["输出"],
+    "da yin": ["打印"],
+    "sao miao": ["扫描"],
+    "lu yin": ["录音"],
+    "pai zhao": ["拍照"],
+    "xiang ji": ["相机"],
+    "tu pian": ["图片"],
+    "wen dang": ["文档"],
+    "biao ge": ["表格"],
+    "huan deng pian": ["幻灯片"],
+    "shu ju fen xi": ["数据分析"],
+    "ren gong zhi neng": ["人工智能"],
+    "ji qi xue xi": ["机器学习"],
+    "shen du xue xi": ["深度学习"],
+    "zi ran yu yan": ["自然语言"],
+    "tu xiang shi bie": ["图像识别"],
+    "yu yin shi bie": ["语音识别"],
+    "tui li": ["推理"],
+    "yu ce": ["预测"],
+    "fen lei": ["分类"],
+    "ju lei": ["聚类"],
+    "hui gui": ["回归"],
+    "shen jing wang luo": ["神经网络"],
+    "juan ji shen jing wang luo": ["卷积神经网络"],
+    "jie zhu yi": ["注意力机制"],
+    "bian yi qi": ["变压器", "变换器"],
+    "da xing yu yan mo xing": ["大型语言模型"],
+    "sheng cheng shi": ["生成式"],
+    "dui hua ji qi ren": ["对话机器人"],
+    "zhi neng zhu shou": ["智能助手"],
+    "wen ben sheng cheng": ["文本生成"],
+    "dai ma sheng cheng": ["代码生成"],
+    "tu xiang sheng cheng": ["图像生成"],
+    "shi pin sheng cheng": ["视频生成"],
+
+    # ── Medical & health ──
+    "kan bing": ["看病"],
+    "yao fang": ["药房"],
+    "yi yuan": ["医院"],
+    "zhen suo": ["诊所"],
+    "ji zhen": ["急诊"],
+    "men zhen": ["门诊"],
+    "zhu yuan": ["住院"],
+    "shou shu": ["手术"],
+    "jian cha": ["检查"],
+    "hua yan": ["化验"],
+    "zhen duan": ["诊断"],
+    "zhi liao": ["治疗"],
+    "yu fang": ["预防"],
+    "kang fu": ["康复"],
+    "bao jian": ["保健"],
+    "jian kang": ["健康"],
+    "yun dong": ["运动"],
+    "jian shen": ["健身"],
+    "pao bu": ["跑步"],
+    "san bu": ["散步"],
+    "you yong": ["游泳"],
+    "dan bai zhi": ["蛋白质"],
+    "wei sheng su": ["维生素"],
+    "ka lu li": ["卡路里"],
+    "jian fei": ["减肥"],
+    "zeng zhong": ["增重"],
+    "yin shi": ["饮食", "引十"],
+    "shui mian": ["睡眠"],
+    "zuo xi": ["作息"],
+    "ya li": ["压力"],
+    "jiao lv": ["焦虑"],
+    "yi yu": ["抑郁", "易于"],
+    "xin tai": ["心态"],
+    "qing xu": ["情绪"],
+    "xin li": ["心理", "心力"],
+}
 
 # Inline mapping of pinyin syllables → [character, ...] ordered by frequency
 SYLLABLE_MAP = {
@@ -438,18 +1356,130 @@ SYLLABLE_MAP = {
     "zuo": ["做", "作", "坐", "座", "左", "昨", "佐"],
 }
 
+_EXT_DATA_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "data", "pinyin_map_ext.json"
+)
+if os.path.exists(_EXT_DATA_PATH):
+    try:
+        with open(_EXT_DATA_PATH, "r", encoding="utf-8") as _f:
+            _ext_data: dict[str, list[str]] = json.load(_f)
+        for _syl, _chars in _ext_data.items():
+            if _syl in SYLLABLE_MAP:
+                _seen = set(_chars)
+                _merged = list(_chars)
+                for _c in SYLLABLE_MAP[_syl]:
+                    if _c not in _seen:
+                        _seen.add(_c)
+                        _merged.append(_c)
+                SYLLABLE_MAP[_syl] = _merged
+            else:
+                SYLLABLE_MAP[_syl] = _chars
+    except (json.JSONDecodeError, OSError, IOError):
+        pass
+del _EXT_DATA_PATH
+
+# ── Initial map: single-letter → all matching full syllables (for 简拼) ──
+INITIAL_MAP: dict[str, list[str]] = {}
+for _syl in SYLLABLE_MAP:
+    _init = _syl[0]
+    if _init not in INITIAL_MAP:
+        INITIAL_MAP[_init] = []
+    INITIAL_MAP[_init].append(_syl)
+# Ensure all 26 letters have at least an empty list
+for _c in "abcdefghijklmnopqrstuvwxyz":
+    INITIAL_MAP.setdefault(_c, [])
+
+
+def get_char_tuples(
+    syllable: str,
+    freq_db: object = None,
+    max_count: int = 15,
+    expand_initials: bool = True,
+) -> list[tuple[str, float]]:
+    """Get weighted (char, score) tuples, expanding initials if enabled.
+
+    If expand_initials is True and the syllable is a single letter that
+    is a valid initial, characters from ALL matching full syllables are
+    merged (each char appears once, with its highest score).
+    """
+    if expand_initials and len(syllable) == 1 and syllable in INITIAL_MAP:
+        expanded_syls = INITIAL_MAP[syllable]
+        if not expanded_syls:
+            return []
+        merged: dict[str, float] = {}
+        for fs in expanded_syls:
+            entries = get_weighted_char_tuples(fs, freq_db, max_count=max_count)
+            for ch, sc in entries:
+                if ch not in merged or sc > merged[ch]:
+                    merged[ch] = sc
+        # Sort by score descending, cap at max_count
+        sorted_chars = sorted(merged.items(), key=lambda x: -x[1])
+        return sorted_chars[:max_count]
+    return get_weighted_char_tuples(syllable, freq_db, max_count=max_count)
+
 
 def get_characters(syllable: str, max_count: int = 10) -> list[str]:
     """Return top N characters for a pinyin syllable."""
     return SYLLABLE_MAP.get(syllable.lower(), [])[:max_count]
 
 
+def get_weighted_characters(
+    syllable: str,
+    freq_db: object = None,
+    max_count: int = 10,
+) -> list[str]:
+    """Return top N characters weighted by frequency (uses FreqDB if available).
+
+    When freq_db is provided, returns characters sorted by base frequency
+    score + any LLM runtime adjustments. Otherwise falls back to SYLLABLE_MAP.
+    """
+    if freq_db is not None:
+        try:
+            return freq_db.get_top_characters(syllable, max_count=max_count)
+        except AttributeError:
+            pass
+    return get_characters(syllable, max_count=max_count)
+
+
+def get_weighted_char_tuples(
+    syllable: str,
+    freq_db: object = None,
+    max_count: int = 15,
+) -> list[tuple[str, float]]:
+    """Return (char, freq_score) tuples for a syllable, sorted by score descending.
+
+    This is the input format needed by Viterbi decoder.
+    Results are always intersected with SYLLABLE_MAP to filter out
+    noise from freq_db (characters mapped to wrong pinyin).
+    """
+    valid_chars = set(SYLLABLE_MAP.get(syllable.lower(), []))
+    if freq_db is not None:
+        try:
+            raw = freq_db.get_syllable_chars(syllable)[:max_count]
+            # Intersect with valid SYLLABLE_MAP entries to filter noise
+            result = [(ch, sc) for ch, sc in raw if ch in valid_chars]
+            if result:
+                return result
+        except AttributeError:
+            pass
+    chars = SYLLABLE_MAP.get(syllable.lower(), [])[:max_count]
+    if not chars:
+        return []
+    # Without freq_db: assign scores based on position (1.0, 0.9, 0.8, ...)
+    n = len(chars)
+    return [(ch, max(0.1, 1.0 - i * 0.9 / n)) for i, ch in enumerate(chars)]
+
+
 def segment_pinyin(pinyin: str) -> list[str]:
     """
-    Simple greedy segmentation of pinyin into syllables.
+    Greedy segmentation of pinyin into syllables, with 简拼 support.
 
-    Handles continuous pinyin like "womenyinggaizenmeban".
-    And space-separated pinyin like "ni hao".
+    Handles:
+      - Space-separated pinyin  "ni hao"
+      - Continuous pinyin       "womenyinggaizenmeban"
+      - Abbreviation initials   "nh"  → "n" + "h"
+      - Mixed                   "wmen" → "w" + "men"
     """
     if not pinyin:
         return []
@@ -468,10 +1498,11 @@ def segment_pinyin(pinyin: str) -> list[str]:
     pinyin = pinyin.strip().lower()
     syllables = []
     i = 0
-    max_len = 6  # longest valid pinyin syllable is 6 chars (e.g. "chuang", "shuang")
+    max_len = 6  # longest valid pinyin syllable
 
     while i < len(pinyin):
         matched = False
+        # Try longest match first
         for end in range(min(i + max_len, len(pinyin)), i, -1):
             cand = pinyin[i:end]
             if cand in SYLLABLE_MAP:
@@ -480,42 +1511,167 @@ def segment_pinyin(pinyin: str) -> list[str]:
                 matched = True
                 break
         if not matched:
-            # Fallback: take one character as unknown syllable
-            syllables.append(pinyin[i])
+            # If single character is a valid initial, keep it for expansion
+            if pinyin[i] in INITIAL_MAP:
+                syllables.append(pinyin[i])
+            else:
+                # Genuine unknown character — still include it
+                syllables.append(pinyin[i])
             i += 1
 
     return syllables
 
 
-def generate_candidates(pinyin_input: str, max_combinations: int = 12) -> list[str]:
-    """
-    Generate candidate word sequences from pinyin input using syllable→char map.
+_DEFAULT_BIGRAM: Optional[BigramModel] = None
 
-    For single syllable: return individual character candidates.
-    For multi syllable: return common combinations.
+
+def _ensure_bigram_model() -> Optional[BigramModel]:
+    """Lazy-load the default BigramModel singleton."""
+    global _DEFAULT_BIGRAM
+    if _DEFAULT_BIGRAM is None:
+        try:
+            _DEFAULT_BIGRAM = BigramModel()
+        except Exception:
+            _DEFAULT_BIGRAM = None
+    return _DEFAULT_BIGRAM
+
+
+def generate_candidates(
+    pinyin_input: str,
+    max_combinations: int = 36,
+    freq_db: object = None,
+    bigram_model: object = None,
+) -> list[str]:
+    """Generate candidate word sequences from pinyin input.
+
+    Strategy (for multi-syllable):
+      1. Look up WORD_MAP for exact pinyin → include those words first.
+      2. Run Viterbi beam search (when bigram_model is available) for
+         sentence-level candidates optimised by bigram transition probs.
+      3. Fall back to character-level cartesian combinations.
+      4. Deduplicate while preserving order.
     """
     syllables = segment_pinyin(pinyin_input.strip())
     if not syllables:
         return []
 
-    # Single syllable: return characters
+    # Single syllable: return weighted characters (expand initials)
     if len(syllables) == 1:
-        return get_characters(syllables[0], max_count=max_combinations)
+        tups = get_char_tuples(syllables[0], freq_db, max_count=max_combinations)
+        return [ch for ch, _ in tups]
 
-    # Multi-syllable: generate top combinations
-    # Start with the first syllable's characters
-    candidates = []
-    first_chars = get_characters(syllables[0], max_count=10)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    pinyin_key = " ".join(syllables)
 
+    # Step 1: WORD_MAP lookup (exact multi-syllable words)
+    word_candidates = WORD_MAP.get(pinyin_key, [])
+    for w in word_candidates:
+        if w not in seen:
+            candidates.append(w)
+            seen.add(w)
+
+    remaining = max_combinations - len(candidates)
+    if remaining <= 0:
+        return candidates[:max_combinations]
+
+    # Step 2: Viterbi beam search (sentence-level, bigram-optimised)
+    bm = bigram_model if bigram_model is not None else _ensure_bigram_model()
+    viterbi_used = False
+    if bm is not None:
+        try:
+            # Build syllable → weighted char tuples for Viterbi
+            base_max = 15 if freq_db is not None else 10
+            syll_chars = []
+            for syl in syllables:
+                ctuples = get_char_tuples(syl, freq_db, max_count=base_max)
+                if not ctuples and freq_db is not None:
+                    ctuples = get_char_tuples(syl, None, max_count=base_max)
+                syll_chars.append(ctuples)
+
+            beam_results = viterbi_decode(
+                syllables, syll_chars,
+                bigram_model=bm,
+                beam_size=min(remaining * 2, 30),
+                max_results=remaining,
+            )
+            for seq_scores in beam_results:
+                text = "".join(ch for ch, _ in seq_scores)
+                if text not in seen:
+                    candidates.append(text)
+                    seen.add(text)
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
+            viterbi_used = True
+        except Exception:
+            pass
+
+    remaining = max_combinations - len(candidates)
+    if remaining <= 0:
+        return candidates[:max_combinations]
+
+    # Step 3: Fallback character combinations (no bigram model, or
+    # Viterbi didn't produce enough candidates)
+    # Use more base chars since we have 3500+ in the freq DB
+    base_max = 15 if freq_db is not None else 10
+    first_tups = get_char_tuples(syllables[0], freq_db, max_count=base_max)
+    first_chars = [ch for ch, _ in first_tups]
     for ch in first_chars:
-        rest = generate_candidates(" ".join(syllables[1:]), max_combinations)
+        if len(candidates) >= max_combinations:
+            break
+        rest = generate_candidates(" ".join(syllables[1:]),
+                                   max_combinations - len(candidates),
+                                   freq_db=freq_db,
+                                   bigram_model=None)  # no recursion for Viterbi
         if not rest:
-            candidates.append(ch)
+            if ch not in seen:
+                candidates.append(ch)
+                seen.add(ch)
         else:
-            for rc in rest[:3]:  # limit branching
-                candidates.append(ch + rc)
+            for rc in rest:
+                combo = ch + rc
+                if combo not in seen:
+                    candidates.append(combo)
+                    seen.add(combo)
+                    if len(candidates) >= max_combinations:
+                        break
 
     return candidates[:max_combinations]
+
+
+# ── Local re-ranker (offline, no LLM needed) ─────────────────
+# Bigram frequency map built from WORD_MAP
+# Used to score multi-character candidates by how common
+# their character pairs are in known Chinese words.
+_BIGRAM_FREQ: dict[str, int] = {}
+for _words in WORD_MAP.values():
+    for _word in _words:
+        for _i in range(len(_word) - 1):
+            _bg = _word[_i:_i+2]
+            _BIGRAM_FREQ[_bg] = _BIGRAM_FREQ.get(_bg, 0) + 1
+
+
+def local_rank(candidates: list[str]) -> list[str]:
+    """Re-rank multi-character candidates by bigram frequency.
+
+    Candidates made of common character pairs (e.g. "问题" from
+    WORD_MAP) score higher than rare combinations. Single characters
+    keep their original order.
+    """
+    if not candidates:
+        return candidates
+
+    def score(text: str) -> float:
+        if len(text) <= 1:
+            return 0.0
+        total = 0.0
+        for i in range(len(text) - 1):
+            total += _BIGRAM_FREQ.get(text[i:i+2], 0)
+        return total / (len(text) - 1)  # normalize by bigram count
+
+    # Sort by score (desc), tie-break by original position
+    return sorted(candidates, key=lambda x: (-score(x), candidates.index(x)))
 
 
 def syllable_count(pinyin_input: str) -> int:

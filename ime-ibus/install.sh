@@ -42,27 +42,37 @@ LAUNCHER
     mkdir -p /usr/share/ibus-ime-llm/
     # We need the full ime-core package, not just bus_main.py
     echo "  → Copying ime-core modules to /usr/share/ibus-ime-llm/"
-    cp "$IME_CORE_DIR"/engine.py    /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/cache.py     /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/config.py    /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/llm_backend.py /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/pinyin_map.py /usr/share/ibus-ime-llm/
-    cp "$IME_CORE_DIR"/ibus_main.py  /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/engine.py       /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/cache.py        /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/config.py       /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/llm_backend.py  /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/pinyin_map.py   /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/ibus_main.py    /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/freq_db.py      /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/bigram_model.py /usr/share/ibus-ime-llm/
+    cp "$IME_CORE_DIR"/viterbi.py      /usr/share/ibus-ime-llm/
 
-    # 3. Icon
+    # 3. Copy data directory (pinyin map ext, bigram/unigram counts)
+    echo "  → Copying data directory"
+    mkdir -p /usr/share/ibus-ime-llm/data
+    cp "$IME_CORE_DIR"/data/pinyin_map_ext.json /usr/share/ibus-ime-llm/data/
+    cp "$IME_CORE_DIR"/data/bigram_counts.json  /usr/share/ibus-ime-llm/data/
+    cp "$IME_CORE_DIR"/data/unigram_counts.json /usr/share/ibus-ime-llm/data/
+
+    # 4. Icon
     echo "  → Installing icon"
     mkdir -p "$ICON_DIR"
     cp "$IME_IBUS_DIR/ime-llm.svg" "$ICON_TARGET"
 
-    # 4. Component XML
+    # 5. Component XML
     echo "  → Installing component XML"
     cp "$IME_IBUS_DIR/ime-llm.xml" "$COMPONENT_TARGET"
 
-    # 5. Refresh IBus registry
+    # 6. Refresh IBus registry
     echo "  → Refreshing IBus component cache"
     ibus write-cache 2>/dev/null || true
 
-    # 6. Restart IBus
+    # 7. Restart IBus
     echo "  → Restarting ibus-daemon"
     ibus restart 2>/dev/null || true
 
@@ -89,7 +99,7 @@ do_uninstall() {
     rm -f "$LIBEXEC_TARGET"
     rm -f "$COMPONENT_TARGET"
     rm -rf /usr/share/ibus-ime-llm/
-    rm -rf /usr/share/ibus-ime-llm/icons/
+    rm -rf "$ICON_DIR"
 
     ibus write-cache 2>/dev/null || true
     ibus restart 2>/dev/null || true

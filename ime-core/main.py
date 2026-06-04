@@ -7,14 +7,14 @@ import os
 # Ensure we can import sibling modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import DEFAULT_CONFIG
+from config import load_config
 from engine import Engine
 from gui import IMEGUI
 
 
 def main():
     # Init engine
-    engine = Engine()
+    engine = Engine(config=load_config())
 
     # Load saved cache
     engine.load_cache()
