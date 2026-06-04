@@ -492,9 +492,10 @@ class IMEGUI:
     def _update_token_stats(self):
         """Update token usage display in status bar."""
         stats = Engine.get_token_stats()
-        total = stats.get("prompt_tokens", 0) + stats.get("completion_tokens", 0)
-        if total:
-            self._token_label.config(text=f"T:{total}")
+        pt = stats.get("prompt_tokens", 0)
+        ct = stats.get("completion_tokens", 0)
+        if pt or ct:
+            self._token_label.config(text=f"I:{pt} O:{ct}")
         else:
             self._token_label.config(text="")
 

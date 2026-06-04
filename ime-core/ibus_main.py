@@ -515,12 +515,13 @@ class IMEBusEngine(IBus.Engine):
             elif self._engine._use_deepseek:
                 parts.append(f"D_")
 
-            # Token usage stats — total tokens (prompt + completion), compact
+            # Token usage stats — input/output separated
             if self._engine._use_deepseek:
                 stats = self._engine.get_token_stats()
-                total = stats.get("prompt_tokens", 0) + stats.get("completion_tokens", 0)
-                if total:
-                    parts.append(f"T:{total}")
+                pt = stats.get("prompt_tokens", 0)
+                ct = stats.get("completion_tokens", 0)
+                if pt or ct:
+                    parts.append(f"I:{pt} O:{ct}")
 
             aux_text = " ".join(parts)
             if self._pinyin:
