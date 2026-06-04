@@ -3,7 +3,11 @@
 import json
 import os
 
-_STATS_DIR = os.path.join(os.path.dirname(__file__), "data")
+_XDG_CACHE_HOME = os.environ.get(
+    "XDG_CACHE_HOME",
+    os.path.expanduser("~/.cache"),
+)
+_STATS_DIR = os.path.join(_XDG_CACHE_HOME, "ime-llm")
 _STATS_PATH = os.path.join(_STATS_DIR, "token_stats.json")
 
 
