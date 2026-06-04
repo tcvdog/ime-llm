@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **three-layer pinyin input method engine** combining traditional pinyin mapping, local vocabulary learning cache, and LLM-based context-aware disambiguation. Supports standalone GUI and Linux IBus integration.
+A **self-learning pinyin input method engine** powered by local + cloud LLMs. Supports standalone GUI and Linux IBus integration.
 
 ---
 
@@ -13,60 +13,65 @@ A **three-layer pinyin input method engine** combining traditional pinyin mappin
 User Input (pinyin)
      │
      ▼
-┌──────────────────────────────────────────────────┐
-│  Layer 0: CharFrequencyDB (freq_db.py)           │
-│  Character frequency weights (3512 chars)        │
-│  LLM-learned adjustments persisted across sess.  │
-└──────────────┬───────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────┐
-│  Layer 1: Pinyin Map (pinyin_map.py)             │
-│  Built-in syllable → character mapping           │
-│  Always available, zero latency                  │
-│  Guarantees candidates for ANY valid pinyin      │
-└──────────────┬───────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────┐
-│  Layer 1.5: Viterbi + Bigram (viterbi.py,        │
-│             bigram_model.py)                     │
-│  HMM beam search for sequence disambiguation     │
-│  Offline — 2025 bigram entries from word list    │
-└──────────────┬───────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────┐
-│  Layer 2: Local Cache (cache.py)                 │
-│  Learns user preferences per context             │
-│  Context-sensitive n-gram suffix matching        │
-│  Zero latency on cache hit                       │
-└──────────────┬───────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────┐
-│  Layer 3: LLM Backend (llm_backend.py)           │
-│  Async re-ranking via OpenAI-compatible API      │
-│  Non-blocking — doesn't slow down typing         │
-│  Deep context-aware disambiguation               │
-│  Supports multiple providers (remote + local)    │
-└──────────────────────────────────────────────────┘
-               │
-               ▼
+┌─────────────────────────────────────────────────────┐
+│  Layer 0: Pinyin Map (pinyin_map.py)                 │
+│  ─ 57,991 words词典 / 36,545 pinyin combos           │
+│  ─ 175,017 words (imported from fcitx5/libpinyin)     │
+│  ─ Zero latency, always available                     │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  Layer 1: Ollama Local Model (optional)               │
+│  ─ qwen2.5:7b, ~300-800ms fast re-ranking            │
+│  ─ VRAM-persistent, real-time inference              │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  Layer 2: DeepSeek Remote API (optional)              │
+│  ─ deepseek-chat, ~2s context-aware re-ranking       │
+│  ─ Async, non-blocking                                │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+         Weighted Merge — 3 sources combined
+         Map(1.0) + Ollama(1.5) + DeepSeek(2.0)
+         ↓
          Candidates Output
 ```
 
-### Why layered architecture?
+### Pipeline
 
-| Layer | Latency | Offline? | Purpose |
-|-------|---------|----------|---------|
-| CharFrequencyDB | ~0ms | ✅ Yes | Frequency-weighted character ordering |
-| Pinyin Map | ~0ms | ✅ Yes | Guaranteed baseline candidates |
-| Viterbi + Bigram | ~0ms | ✅ Yes | Sequence-level disambiguation |
-| Local Cache | ~0ms | ✅ Yes | Personalization from user corrections |
-| LLM | ~500-1500ms | ❌ No | Deep context-aware disambiguation |
+```
+Map(0ms) ──┬──→ 显示结果 ──→ 你选择 → learner记录 → 下次map提升
+           │
+           ├──→ Ollama(并行, ~0.5s) ──→ 加权合并 → 更新llm_scores
+           │
+           └──→ DeepSeek(并行, ~2s) ──→ 加权合并 → 更新llm_scores
+```
 
-Each layer **falls through** to the next — LLM is never a bottleneck for basic typing.
+Key design: **Map/Ollama/DeepSeek run in parallel**. Results are merged by weighted scoring as they arrive. The first to return doesn't "win" — all three contribute proportionally.
+
+### Learning System
+
+Three feedback loops continuously improve accuracy:
+
+```
+你选"相同" → user_weights: "xiang tong"→"相同"+1.0
+           → phrase_boost: 下次地图排第一
+           
+Ollama返回 → llm_scores: 相同+1.5, 相通+0.75, 想通+0.5...
+           → WORD_MAP reordered
+
+DeepSeek返回 → llm_scores: 相同+2.0, 相通+1.0...
+              → WORD_MAP reordered
+```
+
+All persisted across sessions:
+- `data/word_dict.json` — base word dictionary (117K+ pinyin combos)
+- `data/llm_scores.json` — accumulated LLM feedback weights
+- `~/.cache/ime-llm/user_weights.json` — user selection history
 
 ---
 
@@ -74,216 +79,114 @@ Each layer **falls through** to the next — LLM is never a bottleneck for basic
 
 ```
 ime-llm/
-├── ime-core/                   ← Core engine (Python)
+├── ime-core/                   ← Core engine
 │   ├── main.py                 ← Entry point (GUI mode)
-│   ├── engine.py               ← Pipeline orchestrator (3 layers + Viterbi)
-│   ├── pinyin_map.py           ← Layer 1: syllable→char map + word dictionary
-│   ├── cache.py                ← Layer 2: learning cache (context n-gram)
-│   ├── llm_backend.py          ← Layer 3: LLM API client + rank/convert
-│   ├── freq_db.py              ← CharFrequencyDB (3512 chars, LLM weight adj.)
-│   ├── bigram_model.py         ← Bigram language model (add-k + λ interpolation)
-│   ├── viterbi.py              ← Viterbi beam search decoder
+│   ├── engine.py               ← Multi-layer orchestrator
+│   ├── pinyin_map.py           ← Syllable→character map + word dictionary
+│   ├── llm_backend.py          ← LLM API client (OpenAI-compatible)
+│   ├── learner.py              ← User preference learning
 │   ├── config.py               ← Configuration (env > file > defaults)
-│   ├── gui.py                  ← tkinter GUI prototype
+│   ├── gui.py                  ← tkinter GUI (3-badge status display)
 │   ├── ibus_main.py            ← IBus engine (Linux desktop)
-│   ├── test_engine.py          ← Integration test
-│   ├── test_viterbi.py         ← Viterbi unit tests
+│   ├── settings.py             ← Settings dialog (mode/Ollama/DeepSeek)
+│   ├── build_sogou_dict.py     ← Import Sogou word list
+│   ├── import_fcitx_dict.py    ← Import fcitx5/libpinyin dictionary
+│   ├── build_word_dict.py      ← Ollama-generated word list
+│   ├── word_dict_builder.py    ← Background continuous word list builder
+│   ├── update_map.py           ← Batch map weight updater
 │   └── data/
-│       ├── pinyin_map_ext.json ← Extended syllable→char map (3512 chars, 407 syllables)
-│       ├── gen_freq_data.py    ← Frequency data generator script
-│       ├── bigram_counts.json  ← Bigram frequency table (2025 entries)
-│       ├── unigram_counts.json ← Unigram frequency table (1186 chars)
-│       └── gen_bigram_data.py  ← Bigram data generator script
+│       ├── word_dict.json      ← Word dictionary (117K entries)
+│       └── llm_scores.json     ← Accumulated LLM feedback
 │
 ├── ime-ibus/                   ← IBus desktop integration
 │   ├── ime-llm.xml             ← IBus component registration
 │   ├── ime-llm.svg             ← Engine icon
-│   ├── install.sh              ← System install script
-│   └── start-ibus.sh           ← IBus daemon launcher
+│   └── install.sh              ← System install script
 │
-├── validate-ime/               ← Validation & testing
-│   ├── validate.py             ← LLM conversion accuracy test (37 cases)
-│   ├── validate_cache.py       ← Cache effectiveness test
-│   ├── local_cache.py          ← Standalone cache implementation (validation)
-│   ├── test_cases.py           ← 37 test cases (5 categories)
-│   ├── test_cases.json         ← JSON-exported test cases
-│   ├── requirements.txt        ← Python dependencies
-│   └── results/                ← Validation results
+├── validate-ime/               ← Test suite
+│   └── validate.py             ← LLM conversion accuracy test
 │
+├── settings.py                 ← Settings dialog
 ├── README.md
-└── anchor-summary.md           ← Development progress tracker
+└── anchor-summary.md
 ```
 
 ---
 
-## Installation
-
-### Prerequisites
-
-- **Python 3.10+**
-- **Linux Desktop** (for IBus integration)
-- **Optional:** An LLM API key (DeepSeek / OpenAI / Ollama)
-
-### 1. Clone
+## Quick Start
 
 ```bash
-git clone https://github.com/tcvdog/ime-llm.git
-cd ime-llm
-```
-
-### 2. Run the GUI Prototype (Standalone)
-
-No dependencies needed — uses only Python standard library:
-
-```bash
+# Run GUI prototype (no dependencies needed)
 cd ime-core
 python3 main.py
+
+# Install as system IBus engine
+sudo bash ime-ibus/install.sh
 ```
 
-This launches a tkinter window where you can type pinyin and see candidates.
-
-### 3. Run the Integration Test
+### Optional: Enable LLM
 
 ```bash
-cd ime-core
-python3 test_engine.py
-```
-
-### 4. Set Up LLM (Optional)
-
-To enable Layer 3 (AI-powered disambiguation), set an API key:
-
-```bash
-# DeepSeek (recommended, cheapest)
+# DeepSeek (remote, best accuracy)
 export LLM_API_KEY="sk-..."
 export LLM_ENDPOINT="https://api.deepseek.com/v1"
 export LLM_MODEL="deepseek-chat"
 
-# Or OpenAI
-export LLM_API_KEY="sk-..."
-export LLM_ENDPOINT="https://api.openai.com/v1"
-export LLM_MODEL="gpt-4o-mini"
-
-# Or local (Ollama)
-export LLM_ENDPOINT="http://localhost:11434/v1"
-export LLM_MODEL="qwen2.5:1.5b"
+# Ollama (local, fast)
+export OLLAMA_ENDPOINT="http://localhost:11434/v1"
+export OLLAMA_MODEL="qwen2.5:7b"
 ```
 
-### 5. Install as IBus Engine (Linux Desktop)
+### Configuration via Settings GUI
 
-```bash
-cd ime-llm
-sudo bash ime-ibus/install.sh
-```
-
-Then:
-1. Open **IBus Preferences** (`ibus-setup`)
-2. Go to **Input Method → Add → Chinese → IME LLM (AI 输入法)**
-3. Switch to the engine with **Super+Space** (or the IBus panel menu)
-
-### 6. Validate LLM Accuracy
-
-```bash
-cd validate-ime
-export LLM_API_KEY="sk-..."
-python3 validate.py
-
-# Or with a specific model:
-python3 validate.py --endpoint https://api.deepseek.com/v1 --model deepseek-chat
-
-# Cache validation (simulate learning from user corrections):
-python3 validate_cache.py
-```
-
----
-
-## Usage
-
-### GUI Prototype
-
-```
-┌──────────────────────────────────────────┐
-│ 拼音: [xiamian_______________________]   │
-│ 输入: 我饿了想吃                        │
-│                                          │
-│ 候选: [1]虾面 [2]下面 [3]夏眠            │
-│       [4]虾免 [5]瞎面 [6]虾棉            │
-│                                          │
-│ 来源: 拼音映射                           │
-└──────────────────────────────────────────┘
-```
-
-| Key | Action |
-|-----|--------|
-| `a-z` | Type pinyin |
-| `1-9` | Select candidate (on current page) |
-| `Space` | Select top candidate |
-| `Enter` | **Commit raw pinyin letters** |
-| `+` / `-` | Next / previous candidate page |
-| `Backspace` | Delete last pinyin character |
-| `Escape` | Cancel composing |
-| `,` `.` `?` `!` `:` `;` etc. | Commit composed text + output Chinese punctuation |
-
-### IBus Engine (Linux)
-
-Same keybindings apply system-wide in any application. PageUp/PageDown and cursor-down also navigate candidate pages.
-
----
-
-## Configuration
-
-Configuration priority (highest first):
-
-1. **Environment variables** — `LLM_API_KEY`, `LLM_ENDPOINT`, `LLM_MODEL`, `IME_CACHE_PATH`
-2. **User config file** — `~/.config/ime-llm/config.json`
-3. **Defaults** — Embedded in `config.py`
-
-### Default Configuration
+Click the **⚙** button in the GUI, or edit `~/.config/ime-llm/config.json`:
 
 ```json
 {
+  "mode": "map_ollama_deepseek",
   "llm": {
     "endpoint": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat",
-    "api_key": "",
-    "timeout": 15
+    "model": "deepseek-chat"
   },
-  "cache": {
-    "context_window": 6,
-    "save_path": "~/.cache/ime-llm/user_cache.json"
-  },
-  "engine": {
-    "max_candidates": 9,
-    "llm_fallback": true
+  "ollama": {
+    "endpoint": "http://localhost:11434/v1",
+    "model": "qwen2.5:7b",
+    "timeout": 10
   }
 }
 ```
 
----
-
-## Test Cases
-
-37 test cases across 5 categories:
-
-| Category | Count | Description |
-|----------|-------|-------------|
-| `basic` | 4 | Unambiguous conversions |
-| `disambig` | 16 | **Core:** Context-sensitive disambiguation (虾面/下面, 暑假/书价/书架, etc.) |
-| `long_sentence` | 5 | Continuous pinyin without spaces |
-| `named_entity` | 4 | Person/place names (李白 vs 三百) |
-| `edge` | 8 | Edge cases (multi-phonetic characters, single syllables) |
+Four modes: `map_only` | `map_ollama` | `map_deepseek` | `map_ollama_deepseek`
 
 ---
 
 ## Technical Highlights
 
-- **N-gram Context Cache**: Learns user preferences with suffix-based fuzzy matching — "想吃的" can match "吃的" from previous training
-- **Non-blocking LLM**: LLM refinement runs asynchronously via a polling timer (every 400-500ms), never blocking input
-- **Viterbi Beam Search**: HMM-based sequence disambiguation using bigram transition probabilities with add-k smoothing
-- **CharFrequencyDB**: 3512-character frequency database with runtime LLM weight adjustments that persist across sessions
-- **Multi-Provider LLM**: Supports multiple LLM backends simultaneously (remote API + local Ollama) with runtime switching
-- **Greedy Pinyin Segmentation**: Handles both space-separated (`ni hao`) and continuous (`womenyinggaizenmeban`) input
-- **Zero External Dependencies**: GUI mode uses only Python stdlib (`tkinter`, `urllib`, `json`)
+| Feature | Detail |
+|---------|--------|
+| **Parallel LLM** | Ollama + DeepSeek run simultaneously, results merged by weighted scoring |
+| **300ms debounce** | No LLM request on every keystroke — waits for typing pause |
+| **Self-learning** | 3 feedback loops: user selection, Ollama, DeepSeek — all update map weights |
+| **Compound detection** | Select "相" + "同" → system learns "相同" as a phrase |
+| **Late LLM learning** | Even if you selected before LLM returned, result is learned with reduced weight |
+| **Scenario-aware weights** | 6 scenarios with different learning rates (0.15~1.0) |
+| **117K word dictionary** | Imported from fcitx5/libpinyin, validated against SYLLABLE_MAP |
+| **Three-badge UI** | Shows Map ✓ / Ollama ✓ / DeepSeek ✓ status simultaneously |
+| **VRAM-persistent** | qwen2.5:7b stays loaded in GPU memory (~0.3s inference) |
+| **Zero deps GUI** | GUI mode uses only Python stdlib |
+
+---
+
+## Data Sharing
+
+The learning data can be shared between users:
+
+```bash
+# Back up / share
+ime-core/data/word_dict.json       # Base dictionary + LLM-refined ordering
+ime-core/data/llm_scores.json      # Accumulated LLM feedback scores
+~/.cache/ime-llm/user_weights.json # User selection preferences
+```
 
 ---
 

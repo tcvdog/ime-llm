@@ -142,12 +142,19 @@ class LLMBackend:
 
     # ── Public API ──
 
-    def convert(self, pinyin: str, context: str = "") -> tuple[Optional[str], float]:
+    def convert(self, pinyin: str, context: str = "",
+                user_hints: str = "") -> tuple[Optional[str], float]:
         """LLM picks the single best conversion for a pinyin string."""
         if not self.available:
             return None, 0.0
 
-        user_msg = f"上下文：{context}\n拼音：{pinyin}" if context else f"拼音：{pinyin}"
+        parts = []
+        if context:
+            parts.append(f"上下文：{context}")
+        if user_hints:
+            parts.append(user_hints)
+        parts.append(f"拼音：{pinyin}")
+        user_msg = "\n".join(parts)
         return self._call(_CONV_PROMPT, user_msg, max_tokens=64)
 
     def suggest_sentence(
@@ -172,6 +179,7 @@ class LLMBackend:
         pinyin: str,
         candidates: list[str],
         context: str = "",
+        user_hints: str = "",
     ) -> tuple[Optional[list[str]], None, float]:
         """Re-rank candidates by contextual likelihood.
 
@@ -179,6 +187,7 @@ class LLMBackend:
             pinyin: the pinyin input string
             candidates: candidate list to re-rank
             context: preceding text context
+            user_hints: optional user preference data (e.g. "用户历史：虾面(5次)")
 
         Returns:
             (reordered_list | None, None, latency_seconds)
@@ -198,6 +207,8 @@ class LLMBackend:
         parts = [f"拼音：{pinyin}", f"候选词：{candidate_str}"]
         if context:
             parts.insert(0, f"上下文：{context}")
+        if user_hints:
+            parts.append(user_hints)
         user_msg = "\n".join(parts)
 
         raw, elapsed = self._call(RANK_PROMPT, user_msg, max_tokens=512)

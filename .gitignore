@@ -23,7 +23,17 @@ ime-core/user_cache.json
 ime-core/__pycache__/
 validate-ime/__pycache__/
 
-# OpenCode workspace files
+# External data sources (not needed for runtime)
+word-master/
+word-master.zip
+
+# Generated/auto paths (from script output path bug)
+ime-core/ime-core/
+
+# User home artifacts
+~/
+
+# User config/cache (per-machine)
 .omo/
 
 # Optional: keep results dir but ignore its contents

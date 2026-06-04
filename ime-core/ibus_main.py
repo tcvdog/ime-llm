@@ -129,6 +129,13 @@ class IMEBusEngine(IBus.Engine):
             orientation=IBus.Orientation.HORIZONTAL,
         )
 
+        # ── LLM state ──
+        self._llm_loaded = False
+        self._llm_spinner_idx = 0
+        self._llm_can_update = True
+        self._llm_results_applied = 0
+        self._debounce_id = None
+
         # ── Timer ──
         GLib.timeout_add(400, self._on_poll_llm)
 
@@ -173,9 +180,8 @@ class IMEBusEngine(IBus.Engine):
         # ── Number keys (1-9) — select candidate on current page ──
         if 0x31 <= keyval <= 0x39:
             idx = keyval - 0x31
-            # Index on current page (IBus LookupTable handles cursor position)
             if idx < len(self._candidates):
-                # Commit at global index = page_start + idx
+                self._llm_can_update = False
                 ps = self._lookup_table.page_size
                 page_start = self._lookup_table.get_cursor_pos() // ps * ps
                 global_idx = page_start + idx
@@ -192,6 +198,7 @@ class IMEBusEngine(IBus.Engine):
         # ── Space — select top candidate ──
         if keyval == IBus.KEY_space:
             if self._pinyin and self._candidates:
+                self._llm_can_update = False
                 self._commit(0)
                 return True
             return False
@@ -310,6 +317,7 @@ class IMEBusEngine(IBus.Engine):
 
     def do_destroy(self):
         try:
+            self._engine.save_learner()
             log.info("Engine destroyed")
             super().destroy()
         except Exception as exc:
@@ -323,11 +331,26 @@ class IMEBusEngine(IBus.Engine):
             if not self._pinyin:
                 self._candidates = []
                 return
-            raw = self._engine.process(self._pinyin)
+            # Map layer only — instant feedback
+            raw = self._engine.process_map(self._pinyin)
             self._candidates = [(t, s) for t, _, s in raw]
+            self._llm_loaded = False
+            self._llm_can_update = True
+            self._llm_results_applied = 0
+            # Schedule debounced LLM submission
+            if hasattr(self, '_debounce_id') and self._debounce_id:
+                GLib.source_remove(self._debounce_id)
+            self._debounce_id = GLib.timeout_add(300, self._debounced_process)
         except Exception as exc:
             log.error("_refresh_candidates failed: %s", exc, exc_info=True)
             self._candidates = []
+
+    def _debounced_process(self) -> bool:
+        """Full processing with LLM, called after user stops typing."""
+        self._debounce_id = None
+        if self._pinyin:
+            self._engine.process(self._pinyin)
+        return False  # don't repeat
 
     def _commit(self, index: int):
         """Commit the candidate at `index` (global index) to the application."""
@@ -432,15 +455,31 @@ class IMEBusEngine(IBus.Engine):
                 self.hide_preedit_text()
 
             # ── Source indicator ──
-            has_llm = any(s == "llm" for _, s in self._candidates)
-            if self._pinyin and self._candidates:
-                if has_llm:
-                    aux = IBus.Text.new_from_string("● LLM ✓")
-                else:
-                    aux = IBus.Text.new_from_string("○ 拼音映射")
-                self.update_auxiliary_text(aux, True)
-            elif self._pinyin:
-                aux = IBus.Text.new_from_string("⌨ 输入中…")
+            has_ollama = any(s == "ollama" for _, s in self._candidates)
+            has_deepseek = any(s in ("llm", "deepseek") for _, s in self._candidates)
+            llm_loading = self._engine.llm_busy
+            ollama_spinner = "\u25d0\u25d1\u25d2\u25d3"[self._llm_spinner_idx % 4]
+            self._llm_spinner_idx += 1
+
+            parts = []
+            parts.append("M\u2713")  # Map always ready
+            if has_ollama:
+                parts.append(f"O\u2713")
+            elif self._engine._use_ollama and llm_loading:
+                parts.append(f"O{ollama_spinner}")
+            elif self._engine._use_ollama:
+                parts.append(f"O_")
+
+            if has_deepseek:
+                parts.append(f"D\u2713")
+            elif self._engine._use_deepseek and llm_loading:
+                parts.append(f"D{ollama_spinner}")
+            elif self._engine._use_deepseek:
+                parts.append(f"D_")
+
+            aux_text = " ".join(parts)
+            if self._pinyin:
+                aux = IBus.Text.new_from_string(aux_text)
                 self.update_auxiliary_text(aux, True)
             else:
                 self.hide_auxiliary_text()
@@ -450,7 +489,12 @@ class IMEBusEngine(IBus.Engine):
                 saved_pos = self._lookup_table.get_cursor_pos()
                 self._lookup_table.clear()
                 for text, source in self._candidates:
-                    label = "✦" + text if source == "llm" else text
+                    if source in ("llm", "deepseek"):
+                        label = "\u2726" + text
+                    elif source == "ollama":
+                        label = "\u25c9" + text
+                    else:
+                        label = text
                     self._lookup_table.append_candidate(
                         IBus.Text.new_from_string(label)
                     )
@@ -466,26 +510,50 @@ class IMEBusEngine(IBus.Engine):
     def _on_poll_llm(self) -> bool:
         """Periodically check for async LLM refinement results."""
         try:
-            result = self._engine.llm_refine()
-            if result:
-                pinyin, refined, latency = result
-                if pinyin == self._pinyin and refined:
+            results = self._engine.poll_results()
+            for source, pinyin, refined, latency in results:
+                if not refined:
+                    continue
+                if self._llm_can_update:
+                    # Feed LLM ranking back into WORD_MAP
+                    timely = bool(pinyin) and pinyin == self._pinyin
+                    if pinyin:
+                        self._engine.feed_llm_ranking(pinyin, refined, source, timely)
                     current_map = {t: s for t, s in self._candidates}
-                    new_list: list[tuple[str, str]] = []
+                    # First result → #1, second → inserted after first
                     seen: set[str] = set()
-                    # LLM order first — mark as "llm" source
+                    new_list: list[tuple[str, str]] = []
+                    slot = self._llm_results_applied
+                    self._llm_results_applied += 1
+                    # Build new list: keep top slot entries, then insert this source
+                    kept = 0
+                    for t, s in self._candidates:
+                        if t not in seen:
+                            if kept < slot:
+                                new_list.append((t, s))
+                                seen.add(t)
+                                kept += 1
+                            else:
+                                break
                     for text in refined:
-                        if text not in seen:
-                            new_list.append((text, "llm"))
+                        if text not in seen and text in current_map:
+                            new_list.append((text, source))
                             seen.add(text)
-                    # Append candidates LLM missed (preserve original source)
                     for t, s in self._candidates:
                         if t not in seen:
                             new_list.append((t, s))
                             seen.add(t)
                     self._candidates = new_list
+                    self._llm_loaded = True
                     self._update_ui()
-                    log.info("LLM refine: %d candidates (%.0fms)", len(refined), latency * 1000)
+                    log.info("%s refine: %d candidates (%.0fms)",
+                             source, len(refined), latency * 1000)
+                else:
+                    # Display frozen (user selecting) — learn silently
+                    p = self._engine._pending_map_data.get("pinyin", "")
+                    if p:
+                        self._engine.learn_late_llm_result(p, refined)
+                        log.info("%s learned (frozen): %s", source, refined[0] if refined else "?")
         except Exception as exc:
             log.error("_on_poll_llm crashed: %s", exc, exc_info=True)
         return True

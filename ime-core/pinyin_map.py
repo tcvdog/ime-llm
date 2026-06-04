@@ -1391,6 +1391,7 @@ def get_char_tuples(
     syllable: str,
     max_count: int = 15,
     expand_initials: bool = True,
+    user_weights: dict[str, dict[str, float]] = None,
 ) -> list[tuple[str, float]]:
     """Get weighted (char, score) tuples, expanding initials if enabled."""
     if expand_initials and len(syllable) == 1 and syllable in INITIAL_MAP:
@@ -1399,13 +1400,15 @@ def get_char_tuples(
             return []
         merged: dict[str, float] = {}
         for fs in expanded_syls:
-            entries = get_weighted_char_tuples(fs, max_count=max_count)
+            entries = get_weighted_char_tuples(fs, max_count=max_count,
+                                               user_weights=user_weights)
             for ch, sc in entries:
                 if ch not in merged or sc > merged[ch]:
                     merged[ch] = sc
         sorted_chars = sorted(merged.items(), key=lambda x: -x[1])
         return sorted_chars[:max_count]
-    return get_weighted_char_tuples(syllable, max_count=max_count)
+    return get_weighted_char_tuples(syllable, max_count=max_count,
+                                    user_weights=user_weights)
 
 
 def get_characters(syllable: str, max_count: int = 10) -> list[str]:
@@ -1424,13 +1427,29 @@ def get_weighted_characters(
 def get_weighted_char_tuples(
     syllable: str,
     max_count: int = 15,
+    user_weights: dict[str, dict[str, float]] = None,
 ) -> list[tuple[str, float]]:
-    """Return (char, freq_score) tuples for a syllable, sorted by score descending."""
+    """Return (char, freq_score) tuples, sorted by score descending.
+
+    If user_weights are provided, boosts characters the user frequently
+    selects for this syllable (up to +0.5 over base score).
+    """
     chars = SYLLABLE_MAP.get(syllable.lower(), [])[:max_count]
     if not chars:
         return []
     n = len(chars)
-    return [(ch, max(0.1, 1.0 - i * 0.9 / n)) for i, ch in enumerate(chars)]
+    pairs = [(ch, max(0.1, 1.0 - i * 0.9 / n)) for i, ch in enumerate(chars)]
+
+    # Apply user preference boost
+    if user_weights and syllable in user_weights:
+        uweights = user_weights[syllable]
+        total = sum(uweights.values()) or 1
+        for i, (ch, base) in enumerate(pairs):
+            boost = uweights.get(ch, 0) / total * 0.5  # max +0.5 boost
+            pairs[i] = (ch, base + boost)
+        pairs.sort(key=lambda x: -x[1])
+
+    return pairs
 
 
 def segment_pinyin(pinyin: str) -> list[str]:
@@ -1487,13 +1506,20 @@ def segment_pinyin(pinyin: str) -> list[str]:
 def generate_candidates(
     pinyin_input: str,
     max_combinations: int = 36,
+    user_weights: dict[str, dict[str, float]] = None,
+    phrase_boost: dict[str, str] = None,
 ) -> list[str]:
     """Generate candidate word sequences from pinyin input.
 
     Strategy (for multi-syllable):
       1. Look up WORD_MAP for exact pinyin → include those words first.
-      2. Fall back to character-level cartesian combinations.
-      3. Deduplicate while preserving order.
+      2. If user has a preferred phrase (phrase_boost), move it to front.
+      3. Fall back to character-level cartesian combinations.
+      4. Deduplicate while preserving order.
+
+    Args:
+        user_weights: {syllable: {char: boost_ratio}} — boosts user-preferred chars
+        phrase_boost: {pinyin_key: preferred_phrase} — promotes user's top phrase
     """
     syllables = segment_pinyin(pinyin_input.strip())
     if not syllables:
@@ -1501,7 +1527,8 @@ def generate_candidates(
 
     # Single syllable: return weighted characters (expand initials)
     if len(syllables) == 1:
-        tups = get_char_tuples(syllables[0], max_count=max_combinations)
+        tups = get_char_tuples(syllables[0], max_count=max_combinations,
+                                user_weights=user_weights)
         return [ch for ch, _ in tups]
 
     candidates: list[str] = []
@@ -1510,6 +1537,14 @@ def generate_candidates(
 
     # Step 1: WORD_MAP lookup (exact multi-syllable words)
     word_candidates = WORD_MAP.get(pinyin_key, [])
+    # If user has a top phrase for this key, promote it to front
+    if phrase_boost and pinyin_key in phrase_boost:
+        top = phrase_boost[pinyin_key]
+        if top in word_candidates:
+            reordered = [top] + [w for w in word_candidates if w != top]
+            word_candidates = reordered
+        else:
+            word_candidates = [top] + word_candidates
     for w in word_candidates:
         if w not in seen:
             candidates.append(w)
@@ -1521,13 +1556,16 @@ def generate_candidates(
 
     # Step 2: Cartesian combinations as fallback
     base_max = 10
-    first_tups = get_char_tuples(syllables[0], max_count=base_max)
+    first_tups = get_char_tuples(syllables[0], max_count=base_max,
+                                  user_weights=user_weights)
     first_chars = [ch for ch, _ in first_tups]
     for ch in first_chars:
         if len(candidates) >= max_combinations:
             break
         rest = generate_candidates(" ".join(syllables[1:]),
-                                   max_combinations - len(candidates))
+                                   max_combinations - len(candidates),
+                                   user_weights=user_weights,
+                                   phrase_boost=phrase_boost)
         if not rest:
             if ch not in seen:
                 candidates.append(ch)
