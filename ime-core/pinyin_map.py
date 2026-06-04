@@ -1503,6 +1503,91 @@ def segment_pinyin(pinyin: str) -> list[str]:
     return syllables
 
 
+def segment_pinyin_all(pinyin: str) -> list[tuple[list[str], float]]:
+    """Generate all valid pinyin segmentations with path confidence scores.
+
+    Handles ambiguity like 'xian' → ['xian'] or ['xi', 'an'].
+    Each path scored by syllable validity and frequency.
+
+    Returns: [(syllables, score), ...] sorted by score descending.
+    """
+    if not pinyin:
+        return []
+
+    if " " in pinyin.strip():
+        parts = pinyin.strip().split()
+        # Recurse for each space-separated part, then combine all paths
+        paths = [segment_pinyin_all(p) for p in parts]
+        if not paths:
+            return []
+        # Cartesian product of paths across parts
+        from itertools import product as iter_product
+        result = []
+        for combo in iter_product(*paths):
+            all_syl = []
+            total_score = 1.0
+            for syl_list, score in combo:
+                all_syl.extend(syl_list)
+                total_score *= score
+            result.append((all_syl, total_score))
+        result.sort(key=lambda x: -x[1])
+        return result
+
+    pinyin = pinyin.strip().lower()
+    n = len(pinyin)
+    if n == 0:
+        return []
+
+    max_len = 6
+    from collections import defaultdict
+
+    # DP: pos -> [(syllables, score, last_syllable)]
+    dp: dict[int, list[tuple[list[str], float, str]]] = defaultdict(list)
+    dp[0] = [([], 1.0, "")]
+
+    for i in range(n):
+        if i not in dp:
+            continue
+        for end in range(i + 1, min(i + max_len, n) + 1):
+            cand = pinyin[i:end]
+            if cand in SYLLABLE_MAP:
+                total_chars = len(SYLLABLE_MAP[cand])
+                # Frequency score: first chars in the list are more common
+                freq_score = 1.0 - (0.1 * (total_chars / max(total_chars, 15)))
+                for syllables, score, last in dp[i]:
+                    new_score = score * freq_score
+                    dp[end].append((syllables + [cand], new_score, cand))
+
+        # Also try single-character initial expansion (简拼)
+        if i < n and pinyin[i] in INITIAL_MAP:
+            expanded = INITIAL_MAP[pinyin[i]]
+            if expanded:
+                # For each expanded full syllable
+                for fs in expanded[:3]:  # limit to top 3 expansions
+                    if fs in SYLLABLE_MAP:
+                        freq_score = 0.5  # lower confidence for 简拼
+                        for syllables, score, last in dp[i]:
+                            new_score = score * freq_score
+                            dp[i + 1].append(
+                                (syllables + [pinyin[i]], new_score, fs)
+                            )
+
+    if n not in dp:
+        # Fallback: use greedy segmentation
+        return [(segment_pinyin(pinyin), 0.1)]
+
+    # Deduplicate and sort paths
+    seen = set()
+    result = []
+    for syllables, score, _ in sorted(dp[n], key=lambda x: -x[1]):
+        key = " ".join(syllables)
+        if key not in seen:
+            seen.add(key)
+            result.append((syllables, round(score, 4)))
+
+    return result[:5]  # top 5 paths max
+
+
 def generate_candidates(
     pinyin_input: str,
     max_combinations: int = 36,

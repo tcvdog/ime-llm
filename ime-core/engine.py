@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from config import load_config, DEFAULT_CONFIG
-from pinyin_map import segment_pinyin, generate_candidates
+from pinyin_map import segment_pinyin, segment_pinyin_all, generate_candidates
 from llm_backend import LLMBackend
 from learner import UserPreferenceDB
 
@@ -182,14 +182,19 @@ class Engine:
         """Map layer only (instant). For real-time typing feedback.
         
         Called on every keystroke. Returns immediately with map candidates.
-        Does NOT submit LLM requests — use process() after debounce.
+        Considers all valid pinyin segmentation paths, weighted by path score.
         """
         if not pinyin or not pinyin.strip():
             return []
 
         max_candidates = self.config.get("engine", {}).get("max_candidates", 36)
-        syllables = segment_pinyin(pinyin.strip())
-        pinyin_key = " ".join(syllables) if len(syllables) > 1 else ""
+        paths = segment_pinyin_all(pinyin.strip())
+        if not paths:
+            return []
+
+        # Use best path for phrase_boost and LLM submission
+        best_syllables, _ = paths[0]
+        pinyin_key = " ".join(best_syllables) if len(best_syllables) > 1 else ""
 
         phrase_boost: dict[str, str] = {}
         if pinyin_key:
@@ -197,18 +202,26 @@ class Engine:
             if top:
                 phrase_boost[pinyin_key] = top
 
-        candidates = generate_candidates(
-            pinyin, max_combinations=max_candidates,
-            user_weights=self.learner.get_syllable_weights(),
-            phrase_boost=phrase_boost,
-        )
-        if not candidates:
+        # Generate candidates from all paths, weighted by path score
+        all_scored: dict[str, float] = {}
+        for syllables, path_score in paths:
+            pk = " ".join(syllables)
+            pinyin_input = " ".join(syllables)  # Use space-separated for accurate segmentation
+            candidates = generate_candidates(
+                pinyin_input, max_combinations=max_candidates,
+                user_weights=self.learner.get_syllable_weights(),
+                phrase_boost=phrase_boost if pk == pinyin_key else {},
+            )
+            for i, text in enumerate(candidates):
+                score = (1.0 / (i + 1)) * path_score
+                if text not in all_scored or score > all_scored[text]:
+                    all_scored[text] = score
+
+        if not all_scored:
             return []
 
-        scored: list[tuple[str, float, str]] = [
-            (text, 1.0 / (i + 1), "map")
-            for i, text in enumerate(candidates)
-        ]
+        scored = [(text, sc, "map") for text, sc in
+                  sorted(all_scored.items(), key=lambda x: -x[1])]
 
         # Apply accumulated LLM score feedback
         if pinyin_key and pinyin_key in self._llm_scores:
@@ -232,8 +245,12 @@ class Engine:
             return []
 
         max_candidates = self.config.get("engine", {}).get("max_candidates", 36)
-        syllables = segment_pinyin(pinyin.strip())
-        pinyin_key = " ".join(syllables) if len(syllables) > 1 else ""
+        paths = segment_pinyin_all(pinyin.strip())
+        if not paths:
+            return []
+
+        best_syllables, _ = paths[0]
+        pinyin_key = " ".join(best_syllables) if len(best_syllables) > 1 else ""
 
         phrase_boost: dict[str, str] = {}
         if pinyin_key:
@@ -243,18 +260,26 @@ class Engine:
 
         user_hints = _build_user_hints(self.learner, pinyin_key)
 
-        candidates = generate_candidates(
-            pinyin, max_combinations=max_candidates,
-            user_weights=self.learner.get_syllable_weights(),
-            phrase_boost=phrase_boost,
-        )
-        if not candidates:
+        # Generate candidates from all paths, weighted by path score
+        all_scored: dict[str, float] = {}
+        for syllables, path_score in paths:
+            pk = " ".join(syllables)
+            pinyin_input = " ".join(syllables)
+            candidates = generate_candidates(
+                pinyin_input, max_combinations=max_candidates,
+                user_weights=self.learner.get_syllable_weights(),
+                phrase_boost=phrase_boost if pk == pinyin_key else {},
+            )
+            for i, text in enumerate(candidates):
+                score = (1.0 / (i + 1)) * path_score
+                if text not in all_scored or score > all_scored[text]:
+                    all_scored[text] = score
+
+        if not all_scored:
             return []
 
-        scored: list[tuple[str, float, str]] = [
-            (text, 1.0 / (i + 1), "map")
-            for i, text in enumerate(candidates)
-        ]
+        scored = [(text, sc, "map") for text, sc in
+                  sorted(all_scored.items(), key=lambda x: -x[1])]
 
         # Apply accumulated LLM score feedback
         if pinyin_key and pinyin_key in self._llm_scores:
