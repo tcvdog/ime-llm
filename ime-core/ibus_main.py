@@ -174,6 +174,13 @@ class IMEBusEngine(IBus.Engine):
             self._toggle_llm()
             return True
 
+        # ── Ctrl+; — re-rank with DeepSeek, exclude current top candidate ──
+        if (state & IBus.ModifierType.CONTROL_MASK
+                and keyval == ord(';')):
+            if self._pinyin and self._candidates:
+                self._request_deepseek_refine()
+            return True
+
         # Ignore Ctrl/Alt modified keys (but allow Shift)
         if state & (IBus.ModifierType.CONTROL_MASK | IBus.ModifierType.MOD1_MASK):
             return False
@@ -416,6 +423,26 @@ class IMEBusEngine(IBus.Engine):
         except Exception as exc:
             log.error("_commit_prediction crashed: %s", exc, exc_info=True)
 
+    def _request_deepseek_refine(self):
+        """Ctrl+; — user not satisfied, ask DeepSeek to re-rank excluding current top."""
+        try:
+            if not self._pinyin or not self._candidates:
+                return
+            top = self._candidates[0][0]
+            exclude = list(dict.fromkeys(t for t, _ in self._candidates[:3]))
+            self._engine.request_deepseek_refine(
+                pinyin=self._pinyin,
+                candidates=exclude,
+                exclude=[top],
+                context=self._engine.context,
+            )
+            log.info("DeepSeek refine requested: exclude '%s' from %s", top, self._pinyin)
+            # Show spinner in aux text
+            aux = IBus.Text.new_from_string("DeepSeek 重排中...")
+            self.update_auxiliary_text(aux, True)
+        except Exception as exc:
+            log.error("_request_deepseek_refine error: %s", exc)
+
     def _commit_raw_pinyin(self):
         """Enter key: commit raw pinyin letters as text."""
         try:
@@ -613,6 +640,22 @@ class IMEBusEngine(IBus.Engine):
             for source, pinyin, refined, latency in results:
                 if not refined:
                     continue
+                # ── DeepSeek refine (Ctrl+;): replace candidates entirely ──
+                if source == "deepseek_refine":
+                    current_map = {t: s for t, s in self._candidates}
+                    new_candidates = [(t, "llm") for t in refined if t in current_map]
+                    # Also include new words DeepSeek suggested (not in original list)
+                    for t in refined:
+                        if t not in current_map:
+                            new_candidates.append((t, "llm"))
+                    if new_candidates:
+                        self._candidates = new_candidates
+                        self._llm_loaded = True
+                        self._update_ui()
+                        self._update_status(f"DeepSeek 重排完成")
+                        log.info("DeepSeek refine replaced candidates: %s", refined[:5])
+                    continue
+
                 if self._llm_can_update:
                     # Feed LLM ranking back into WORD_MAP
                     timely = bool(pinyin) and pinyin == self._pinyin

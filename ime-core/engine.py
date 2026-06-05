@@ -514,7 +514,7 @@ class Engine:
         In gatekeeper mode, submits DeepSeek if Ollama disagrees with Map.
         """
         results = []
-        for source in ("ollama", "deepseek"):
+        for source in ("ollama", "deepseek", "deepseek_refine"):
             if source not in self._futures or source in self._applied:
                 continue
             future = self._futures[source]
@@ -857,6 +857,33 @@ class Engine:
 
     def reset_context(self):
         self._context = ""
+
+    def request_deepseek_refine(self, pinyin: str, candidates: list[str],
+                                 exclude: list[str], context: str = ""):
+        """User-triggered re-rank: submit to DeepSeek with exclusions.
+        Results come back via poll_results() as source 'deepseek_refine'.
+        """
+        if not self._use_deepseek or not self.llm.available:
+            return
+        self._futures["deepseek_refine"] = self._executor.submit(
+            self._do_refine, pinyin, candidates, exclude, context,
+        )
+
+    def _do_refine(self, pinyin: str, candidates: list[str],
+                   exclude: list[str], context: str,
+    ) -> tuple[str, str, list[str], float, int, int] | None:
+        """Run DeepSeek refine in thread pool."""
+        try:
+            reordered, _, elapsed = self.llm.refine_with_exclusion(
+                pinyin, candidates, exclude, context,
+            )
+            if not reordered:
+                return None
+            pt = self.llm._last_prompt_tokens
+            ct = self.llm._last_completion_tokens
+            return "deepseek_refine", pinyin, reordered, elapsed, pt, ct
+        except Exception:
+            return None
 
     def save_learner(self):
         self.learner.save()

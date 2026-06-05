@@ -237,6 +237,56 @@ class LLMBackend:
     def clear_cache(self):
         self._cache.clear()
 
+    def refine_with_exclusion(self, pinyin: str, candidates: list[str],
+                               exclude: list[str], context: str = "") -> tuple[Optional[list[str]], None, float]:
+        """Re-rank candidates, explicitly excluding certain words.
+
+        Used when user is not satisfied with current results.
+        DeepSeek will avoid the excluded words and prefer alternatives.
+        """
+        if not self.available or not candidates:
+            return None, None, 0.0
+
+        excl_str = "，".join(exclude) if exclude else "无"
+        excl_prompt = (
+            "You are a Chinese IME re-ranker. The user is NOT satisfied with the current top candidates.\n\n"
+            f"拼音：{pinyin}\n"
+            f"候选词：{'，'.join(candidates)}\n"
+        )
+        if context:
+            excl_prompt += f"上下文：{context}\n"
+        if exclude:
+            excl_prompt += f"\n用户不满意的词（必须排除，不能出现在结果中）：{excl_str}\n"
+        excl_prompt += (
+            "\n请重新排序候选词，把最合理的词排前面，排除用户不满意的词。\n"
+            "如果想到了不在候选列表中的更合理词，也可以添加。\n"
+            "输出格式：candidate1,candidate2,candidate3,...（逗号分隔，不要解释）"
+        )
+
+        raw, elapsed = self._call(
+            "You are a Chinese IME re-ranker. Re-rank with exclusions.",
+            excl_prompt, max_tokens=512,
+        )
+        if raw is None:
+            return None, None, elapsed
+
+        # Parse: accept both listed words and new words
+        parsed: list[str] = []
+        seen: set[str] = set()
+        for token in raw.replace("，", ",").split(","):
+            t = token.strip().strip("\"'「」『』（）()")
+            if t and t not in seen and t not in exclude:
+                parsed.append(t)
+                seen.add(t)
+
+        # Append any candidates the LLM missed (except excluded)
+        for c in candidates:
+            if c not in seen and c not in exclude:
+                parsed.append(c)
+                seen.add(c)
+
+        return parsed, None, elapsed
+
     def stats(self) -> dict:
         return {
             "cached": len(self._cache),
