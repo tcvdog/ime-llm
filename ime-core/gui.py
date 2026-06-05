@@ -495,7 +495,7 @@ class IMEGUI:
         pt = stats.get("prompt_tokens", 0)
         ct = stats.get("completion_tokens", 0)
         if pt or ct:
-            self._token_label.config(text=f"I:{pt} O:{ct}")
+            self._token_label.config(text=f"IN:{pt} OUT:{ct}")
         else:
             self._token_label.config(text="")
 

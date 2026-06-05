@@ -564,31 +564,31 @@ class IMEBusEngine(IBus.Engine):
             # LLM master switch indicator
             if not (self._engine._use_ollama or self._engine._use_deepseek):
                 parts.append("LLM:OFF")
-            parts.append("M\u2713")  # Map always ready
+            parts.append("Map\u2713")  # Map always ready
             # Confidence skip indicator
             if getattr(self._engine, '_llm_skipped', False):
-                parts.append("\u2717L")  # LLM skipped (confident enough)
+                parts.append("\u2717LLM")  # LLM skipped (confident enough)
             if has_ollama:
-                parts.append(f"O\u2713")
+                parts.append(f"Ollama\u2713")
             elif self._engine._use_ollama and llm_loading:
-                parts.append(f"O{ollama_spinner}")
+                parts.append(f"Ollama{ollama_spinner}")
             elif self._engine._use_ollama:
-                parts.append(f"O_")
+                parts.append(f"Ollama_")
 
             if has_deepseek:
-                parts.append(f"D\u2713")
+                parts.append(f"DeepSeek\u2713")
             elif self._engine._use_deepseek and llm_loading:
-                parts.append(f"D{ollama_spinner}")
+                parts.append(f"DeepSeek{ollama_spinner}")
             elif self._engine._use_deepseek:
-                parts.append(f"D_")
+                parts.append(f"DeepSeek_")
 
-            # Token usage stats — input/output separated, 15-char gap from LLM indicators
+            # Token usage stats — input/output separated, 10-char gap from LLM indicators
             if self._engine._use_deepseek:
                 stats = self._engine.get_token_stats()
                 pt = stats.get("prompt_tokens", 0)
                 ct = stats.get("completion_tokens", 0)
                 if pt or ct:
-                    parts.append(" " * 14 + f"I:{pt} O:{ct}")
+                    parts.append(" " * 10 + f"IN:{pt} OUT:{ct}")
 
             aux_text = " ".join(parts)
             if self._pinyin:
