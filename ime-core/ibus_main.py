@@ -501,6 +501,9 @@ class IMEBusEngine(IBus.Engine):
             if not (self._engine._use_ollama or self._engine._use_deepseek):
                 parts.append("LLM:OFF")
             parts.append("M\u2713")  # Map always ready
+            # Confidence skip indicator
+            if getattr(self._engine, '_llm_skipped', False):
+                parts.append("\u2717L")  # LLM skipped (confident enough)
             if has_ollama:
                 parts.append(f"O\u2713")
             elif self._engine._use_ollama and llm_loading:

@@ -80,6 +80,7 @@ class Engine:
         # Session state
         self._context = ""
         self._context_max = 200
+        self._llm_skipped = False
 
         # Compound detection
         self._selection_chain: list[tuple[str, str, float]] = []
@@ -306,9 +307,18 @@ class Engine:
 
         texts = [t for t, _, _ in scored]
 
+        # ── Confidence skip: skip LLM if map already confident ──
+        skip = self._should_skip_llm(scored, pinyin_key)
+
         # Cancel pending by clearing old futures
         self._futures.clear()
         self._applied.clear()
+
+        if skip:
+            self._llm_skipped = True
+            return scored
+        else:
+            self._llm_skipped = False
 
         # Store map data for merging late results
         self._pending_map_data = {
@@ -330,6 +340,38 @@ class Engine:
             )
 
         return scored
+
+    def _should_skip_llm(self, scored: list[tuple[str, float, str]],
+                         pinyin_key: str) -> bool:
+        """Decide whether to skip LLM submission based on map confidence.
+
+        Skips when:
+          1. Confidence skip is enabled in config
+          2. There are at least 2 candidates
+          3. Top1 score / Top2 score >= ratio threshold
+          4. User has selected the top word for this pinyin >= min_selections times
+        """
+        cfg = self.config.get("confidence", {})
+        if not cfg.get("enabled", True):
+            return False
+        if len(scored) < 2:
+            return False
+        ratio_threshold = cfg.get("ratio", 1.5)
+        min_sel = cfg.get("min_selections", 3)
+
+        t1_score = scored[0][1]
+        t2_score = scored[1][1]
+        if t2_score <= 0:
+            return False
+        if t1_score / t2_score < ratio_threshold:
+            return False
+
+        if not pinyin_key:
+            return False
+        top_word = scored[0][0]
+        phrase_counts = self.learner._phrase.get(pinyin_key, {})
+        user_count = phrase_counts.get(top_word, 0)
+        return user_count >= min_sel
 
     def _do_rank(
         self, source: str, pinyin: str, candidates: list[str],

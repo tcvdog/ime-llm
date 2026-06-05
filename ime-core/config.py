@@ -39,6 +39,11 @@ DEFAULT_CONFIG: dict = {
         "max_candidates": 36,
         "page_size": 9,
     },
+    "confidence": {
+        "enabled": True,       # master switch for confidence skip
+        "ratio": 1.5,          # top1/top2 score ratio threshold
+        "min_selections": 3,   # user must have selected this word at least N times
+    },
     "learning": {
         "save_path": "~/.cache/ime-llm/user_weights.json",
     },
