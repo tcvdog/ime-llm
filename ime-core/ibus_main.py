@@ -572,7 +572,7 @@ class IMEBusEngine(IBus.Engine):
                         attr = IB.Attribute(
                             IB.AttrType.FOREGROUND, start, end, color,
                         )
-                        attr_list.insert(attr)
+                        attr_list.append(attr)
                     except Exception:
                         pass
                     break
