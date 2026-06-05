@@ -226,17 +226,31 @@ class Engine:
 
     # ── Public API ──
 
+    # ── Fuzzy pinyin configuration ──
+
+    def _get_fuzzy_config(self) -> tuple[bool, set[str] | None]:
+        """Return (fuzzy_enabled, fuzzy_rules_set) from config."""
+        fuzzy_cfg = self.config.get("fuzzy", {})
+        enabled = fuzzy_cfg.get("enabled", False)
+        if not enabled:
+            return False, None
+        rules = fuzzy_cfg.get("rules", [])
+        rules_set = set(rules) if rules else None
+        return True, rules_set
+
     def process_map(self, pinyin: str) -> list[tuple[str, float, str]]:
         """Map layer only (instant). For real-time typing feedback.
         
         Called on every keystroke. Returns immediately with map candidates.
         Considers all valid pinyin segmentation paths, weighted by path score.
         """
+        # Map layer only
         self._predictions.clear()
         if not pinyin or not pinyin.strip():
             return []
 
         max_candidates = self.config.get("engine", {}).get("max_candidates", 36)
+        fuzzy_enabled, fuzzy_rules = self._get_fuzzy_config()
         paths = segment_pinyin_all(pinyin.strip())
         if not paths:
             return []
@@ -255,11 +269,13 @@ class Engine:
         all_scored: dict[str, float] = {}
         for syllables, path_score in paths:
             pk = " ".join(syllables)
-            pinyin_input = " ".join(syllables)  # Use space-separated for accurate segmentation
+            pinyin_input = " ".join(syllables)
             candidates = generate_candidates(
                 pinyin_input, max_combinations=max_candidates,
                 user_weights=self.learner.get_syllable_weights(),
                 phrase_boost=phrase_boost if pk == pinyin_key else {},
+                fuzzy_enabled=fuzzy_enabled,
+                fuzzy_rules=fuzzy_rules,
             )
             for i, text in enumerate(candidates):
                 score = (1.0 / (i + 1)) * path_score
@@ -294,6 +310,7 @@ class Engine:
             return []
 
         max_candidates = self.config.get("engine", {}).get("max_candidates", 36)
+        fuzzy_enabled, fuzzy_rules = self._get_fuzzy_config()
         paths = segment_pinyin_all(pinyin.strip())
         if not paths:
             return []
@@ -318,6 +335,8 @@ class Engine:
                 pinyin_input, max_combinations=max_candidates,
                 user_weights=self.learner.get_syllable_weights(),
                 phrase_boost=phrase_boost if pk == pinyin_key else {},
+                fuzzy_enabled=fuzzy_enabled,
+                fuzzy_rules=fuzzy_rules,
             )
             for i, text in enumerate(candidates):
                 score = (1.0 / (i + 1)) * path_score

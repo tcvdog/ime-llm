@@ -39,6 +39,20 @@ DEFAULT_CONFIG: dict = {
         "max_candidates": 36,
         "page_size": 9,
     },
+    "fuzzy": {
+        "enabled": False,         # master switch for fuzzy pinyin
+        "rules": [                 # enabled rules (all if empty)
+            "zh↔z", "z↔zh",
+            "ch↔c", "c↔ch",
+            "sh↔s", "s↔sh",
+            "l↔n", "n↔l",
+            "an↔ang", "ang↔an",
+            "en↔eng", "eng↔en",
+            "in↔ing", "ing↔in",
+            "ian↔iang", "iang↔ian",
+            "uan↔uang", "uang↔uan",
+        ],
+    },
     "confidence": {
         "enabled": True,       # master switch for confidence skip
         "ratio": 1.5,          # top1/top2 score ratio threshold

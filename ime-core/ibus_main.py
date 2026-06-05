@@ -192,14 +192,20 @@ class IMEBusEngine(IBus.Engine):
             self._update_ui()
             return True
 
-        # ── Number keys (1-9) — select candidate on current page ──
-        if 0x31 <= keyval <= 0x39:
-            idx = keyval - 0x31
-            if idx < len(self._candidates):
+        # ── Number keys (1-9, 0) — select candidate on current page ──
+        # 1-9 select position 1-9, 0 selects position 10 (index 9)
+        number_idx = None
+        if 0x31 <= keyval <= 0x39:  # 1-9
+            number_idx = keyval - 0x31
+        elif keyval == 0x30:  # 0 → position 10
+            number_idx = 9
+
+        if number_idx is not None:
+            if number_idx < len(self._candidates):
                 self._llm_can_update = False
                 ps = self._lookup_table.page_size
                 page_start = self._lookup_table.get_cursor_pos() // ps * ps
-                global_idx = page_start + idx
+                global_idx = page_start + number_idx
                 if global_idx < len(self._candidates):
                     self._commit(global_idx)
                 else:
@@ -209,8 +215,8 @@ class IMEBusEngine(IBus.Engine):
             # Prediction mode: number selects prediction
             if not self._pinyin and self._engine._predictions:
                 preds = self._engine._predictions
-                if idx < len(preds):
-                    self._commit_prediction(idx)
+                if number_idx < len(preds):
+                    self._commit_prediction(number_idx)
                     return True
             self._flush_pending()
             return False
@@ -565,6 +571,10 @@ class IMEBusEngine(IBus.Engine):
             if not (self._engine._use_ollama or self._engine._use_deepseek):
                 parts.append("LLM:OFF")
             parts.append("Map\u2713")  # Map always ready
+            # Fuzzy pinyin indicator
+            fuzzy_cfg = self._engine.config.get("fuzzy", {})
+            if fuzzy_cfg.get("enabled", False):
+                parts.append("模糊")
             if has_ollama:
                 parts.append(f"Ollama\u2713")
             elif self._engine._use_ollama and llm_loading:

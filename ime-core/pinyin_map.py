@@ -1386,12 +1386,87 @@ for _syl in SYLLABLE_MAP:
 for _c in "abcdefghijklmnopqrstuvwxyz":
     INITIAL_MAP.setdefault(_c, [])
 
+# ── Fuzzy pinyin rules ─────────────────────────────────────────
+# Each rule: (name, initial_old, initial_new, final_old, final_new)
+# Empty string means "match any" for that component.
+# When initial_old and final_old are both empty → skip.
+# A rule like ("zh↔z", "zh", "z", "", "") replaces initial "zh" with "z".
+# A rule like ("an↔ang", "", "", "an", "ang") replaces final "an" with "ang".
+_CHINESE_INITIALS = {"zh","ch","sh","b","p","m","f","d","t","n","l",
+                     "g","k","h","j","q","x","r","z","c","s","y","w"}
+
+def _parse_syllable(syl: str) -> tuple[str, str]:
+    """Parse a pinyin syllable into (initial, final).
+    Returns ('', syl) if no initial is recognized."""
+    if len(syl) >= 2 and syl[:2] in _CHINESE_INITIALS:
+        return syl[:2], syl[2:]
+    if len(syl) >= 1 and syl[0] in _CHINESE_INITIALS:
+        return syl[0], syl[1:]
+    return "", syl
+
+FUZZY_SYLLABLE_RULES: list[tuple[str, str, str, str, str]] = [
+    # (name, init_old, init_new, final_old, final_new)
+    # 翘舌/平舌 — initials only (bidirectional)
+    ("zh↔z", "zh", "z", "", ""),
+    ("z↔zh", "z", "zh", "", ""),
+    ("ch↔c", "ch", "c", "", ""),
+    ("c↔ch", "c", "ch", "", ""),
+    ("sh↔s", "sh", "s", "", ""),
+    ("s↔sh", "s", "sh", "", ""),
+    # 边鼻音 — initial l↔n (bidirectional)
+    ("l↔n",  "l",  "n", "", ""),
+    ("n↔l",  "n",  "l", "", ""),
+    # 前后鼻音 — finals only (bidirectional)
+    ("an↔ang",   "", "", "an",   "ang"),
+    ("ang↔an",   "", "", "ang",  "an"),
+    ("en↔eng",   "", "", "en",   "eng"),
+    ("eng↔en",   "", "", "eng",  "en"),
+    ("in↔ing",   "", "", "in",   "ing"),
+    ("ing↔in",   "", "", "ing",  "in"),
+    ("ian↔iang", "", "", "ian",  "iang"),
+    ("iang↔ian", "", "", "iang", "ian"),
+    ("uan↔uang", "", "", "uan",  "uang"),
+    ("uang↔uan", "", "", "uang", "uan"),
+]
+
+def _apply_fuzzy_rule(syl: str, name: str, init_old: str, init_new: str,
+                      final_old: str, final_new: str) -> str | None:
+    """Apply a single fuzzy rule to a syllable. Returns the transformed syllable or None."""
+    init, final = _parse_syllable(syl)
+    if init_old and final_old:
+        if init == init_old and final == final_old:
+            return init_new + final_new
+    elif init_old:
+        if init == init_old and final:
+            return init_new + final
+    elif final_old:
+        if init and final == final_old:
+            return init + final_new
+        if not init and syl == final_old:
+            return (init_new or "") + final_new or final_old  # fallback
+    return None
+
+# Precomputed fuzzy alternative map
+# {syllable: [(alt_syllable, rule_name), ...]}
+FUZZY_ALT_MAP: dict[str, list[tuple[str, str]]] = {}
+for _syl in list(SYLLABLE_MAP.keys()):
+    _alts: dict[str, str] = {}  # alt_syl -> rule_name
+    for _rule in FUZZY_SYLLABLE_RULES:
+        _result = _apply_fuzzy_rule(_syl, *_rule)
+        if _result and _result != _syl and _result in SYLLABLE_MAP:
+            _alts[_result] = _rule[0]
+    if _alts:
+        FUZZY_ALT_MAP[_syl] = list(_alts.items())
+del _CHINESE_INITIALS, _syl, _alts, _rule, _result
+
 
 def get_char_tuples(
     syllable: str,
     max_count: int = 15,
     expand_initials: bool = True,
     user_weights: dict[str, dict[str, float]] = None,
+    fuzzy_enabled: bool = False,
+    fuzzy_rules: set[str] = None,
 ) -> list[tuple[str, float]]:
     """Get weighted (char, score) tuples, expanding initials if enabled."""
     if expand_initials and len(syllable) == 1 and syllable in INITIAL_MAP:
@@ -1401,14 +1476,18 @@ def get_char_tuples(
         merged: dict[str, float] = {}
         for fs in expanded_syls:
             entries = get_weighted_char_tuples(fs, max_count=max_count,
-                                               user_weights=user_weights)
+                                               user_weights=user_weights,
+                                               fuzzy_enabled=fuzzy_enabled,
+                                               fuzzy_rules=fuzzy_rules)
             for ch, sc in entries:
                 if ch not in merged or sc > merged[ch]:
                     merged[ch] = sc
         sorted_chars = sorted(merged.items(), key=lambda x: -x[1])
         return sorted_chars[:max_count]
     return get_weighted_char_tuples(syllable, max_count=max_count,
-                                    user_weights=user_weights)
+                                    user_weights=user_weights,
+                                    fuzzy_enabled=fuzzy_enabled,
+                                    fuzzy_rules=fuzzy_rules)
 
 
 def get_characters(syllable: str, max_count: int = 10) -> list[str]:
@@ -1428,15 +1507,22 @@ def get_weighted_char_tuples(
     syllable: str,
     max_count: int = 15,
     user_weights: dict[str, dict[str, float]] = None,
+    fuzzy_enabled: bool = False,
+    fuzzy_rules: set[str] = None,
 ) -> list[tuple[str, float]]:
     """Return (char, freq_score) tuples, sorted by score descending.
 
     If user_weights are provided, boosts characters the user frequently
     selects for this syllable (up to +0.5 over base score).
+
+    If fuzzy_enabled, also includes characters from fuzzy alternative
+    syllables (e.g. shi↔si) with a score penalty multiplier (0.6).
+    fuzzy_rules can restrict which rules apply (None = all enabled rules).
     """
     chars = SYLLABLE_MAP.get(syllable.lower(), [])[:max_count]
     if not chars:
         return []
+
     n = len(chars)
     pairs = [(ch, max(0.1, 1.0 - i * 0.9 / n)) for i, ch in enumerate(chars)]
 
@@ -1449,7 +1535,29 @@ def get_weighted_char_tuples(
             pairs[i] = (ch, base + boost)
         pairs.sort(key=lambda x: -x[1])
 
-    return pairs
+    # ── Fuzzy pinyin expansion ──
+    if fuzzy_enabled:
+        alt_list = FUZZY_ALT_MAP.get(syllable.lower(), [])
+        for alt_syl, rule_name in alt_list:
+            if fuzzy_rules and rule_name not in fuzzy_rules:
+                continue
+            alt_chars = SYLLABLE_MAP.get(alt_syl, [])[:max_count // 2]
+            alt_n = len(alt_chars)
+            for i, ch in enumerate(alt_chars):
+                fuzzy_score = max(0.1, 1.0 - i * 0.9 / max(alt_n, 1)) * 0.6
+                # Don't add if same character already exists with higher score
+                existing = next((sc for c, sc in pairs if c == ch), None)
+                if existing is None or fuzzy_score > existing:
+                    if existing is None:
+                        pairs.append((ch, fuzzy_score))
+                    else:
+                        for j, (c, _) in enumerate(pairs):
+                            if c == ch:
+                                pairs[j] = (ch, fuzzy_score)
+                                break
+        pairs.sort(key=lambda x: -x[1])
+
+    return pairs[:max_count]
 
 
 def segment_pinyin(pinyin: str) -> list[str]:
@@ -1595,18 +1703,23 @@ def generate_candidates(
     max_combinations: int = 36,
     user_weights: dict[str, dict[str, float]] = None,
     phrase_boost: dict[str, str] = None,
+    fuzzy_enabled: bool = False,
+    fuzzy_rules: set[str] = None,
 ) -> list[str]:
     """Generate candidate word sequences from pinyin input.
 
     Strategy (for multi-syllable):
       1. Look up WORD_MAP for exact pinyin → include those words first.
-      2. If user has a preferred phrase (phrase_boost), move it to front.
-      3. Fall back to character-level cartesian combinations.
-      4. Deduplicate while preserving order.
+      2. Also check fuzzy WORD_MAP keys (if fuzzy_enabled) → lower priority.
+      3. If user has a preferred phrase (phrase_boost), move it to front.
+      4. Fall back to character-level cartesian combinations.
+      5. Deduplicate while preserving order.
 
     Args:
         user_weights: {syllable: {char: boost_ratio}} — boosts user-preferred chars
         phrase_boost: {pinyin_key: preferred_phrase} — promotes user's top phrase
+        fuzzy_enabled: if True, expand to fuzzy pinyin alternatives
+        fuzzy_rules: set of rule names to allow (None = all enabled rules)
     """
     syllables = segment_pinyin(pinyin_input.strip())
     if not syllables:
@@ -1615,7 +1728,9 @@ def generate_candidates(
     # Single syllable: return weighted characters (expand initials)
     if len(syllables) == 1:
         tups = get_char_tuples(syllables[0], max_count=max_combinations,
-                                user_weights=user_weights)
+                                user_weights=user_weights,
+                                fuzzy_enabled=fuzzy_enabled,
+                                fuzzy_rules=fuzzy_rules)
         return [ch for ch, _ in tups]
 
     candidates: list[str] = []
@@ -1623,7 +1738,7 @@ def generate_candidates(
     pinyin_key = " ".join(syllables)
 
     # Step 1: WORD_MAP lookup (exact multi-syllable words)
-    word_candidates = WORD_MAP.get(pinyin_key, [])
+    word_candidates = WORD_MAP.get(pinyin_key, []).copy()
     # If user has a top phrase for this key, promote it to front
     if phrase_boost and pinyin_key in phrase_boost:
         top = phrase_boost[pinyin_key]
@@ -1637,6 +1752,16 @@ def generate_candidates(
             candidates.append(w)
             seen.add(w)
 
+    # Step 1b: Fuzzy WORD_MAP lookup (if enabled)
+    if fuzzy_enabled and syllable_count(pinyin_input) > 1:
+        fuzzy_keys = get_fuzzy_word_map_keys(pinyin_key, fuzzy_rules)
+        for fk in fuzzy_keys:
+            fw = WORD_MAP.get(fk, [])
+            for w in fw:
+                if w not in seen:
+                    candidates.append(w)
+                    seen.add(w)
+
     remaining = max_combinations - len(candidates)
     if remaining <= 0:
         return candidates[:max_combinations]
@@ -1644,7 +1769,9 @@ def generate_candidates(
     # Step 2: Cartesian combinations as fallback
     base_max = 10
     first_tups = get_char_tuples(syllables[0], max_count=base_max,
-                                  user_weights=user_weights)
+                                  user_weights=user_weights,
+                                  fuzzy_enabled=fuzzy_enabled,
+                                  fuzzy_rules=fuzzy_rules)
     first_chars = [ch for ch, _ in first_tups]
     for ch in first_chars:
         if len(candidates) >= max_combinations:
@@ -1652,7 +1779,9 @@ def generate_candidates(
         rest = generate_candidates(" ".join(syllables[1:]),
                                    max_combinations - len(candidates),
                                    user_weights=user_weights,
-                                   phrase_boost=phrase_boost)
+                                   phrase_boost=phrase_boost,
+                                   fuzzy_enabled=fuzzy_enabled,
+                                   fuzzy_rules=fuzzy_rules)
         if not rest:
             if ch not in seen:
                 candidates.append(ch)
@@ -1667,6 +1796,37 @@ def generate_candidates(
                         break
 
     return candidates[:max_combinations]
+
+
+def get_fuzzy_word_map_keys(pinyin_key: str, fuzzy_rules: set[str] = None) -> list[str]:
+    """Generate fuzzy alternative keys for WORD_MAP lookup.
+
+    For each syllable in the key, tries its fuzzy alternatives,
+    generating all valid multi-syllable combinations.
+    """
+    syllables = pinyin_key.split()
+    if not syllables:
+        return []
+
+    # For each syllable, get its fuzzy alternatives
+    fuzzy_options: list[list[str]] = []
+    for syl in syllables:
+        options = [syl]
+        alts = FUZZY_ALT_MAP.get(syl, [])
+        for alt_syl, rule_name in alts:
+            if fuzzy_rules and rule_name not in fuzzy_rules:
+                continue
+            options.append(alt_syl)
+        fuzzy_options.append(options)
+
+    # Generate combinations of alternatives
+    from itertools import product
+    result = []
+    for combo in product(*fuzzy_options):
+        key = " ".join(combo)
+        if key != pinyin_key:  # skip the original key
+            result.append(key)
+    return result
 
 
 def syllable_count(pinyin_input: str) -> int:
