@@ -103,6 +103,7 @@ class Engine:
         self._applied: set[str] = set()                 # sources already merged into UI
         self._pending_map_data: dict = {}               # stored for late submissions
         self._deepseek_deferred = False                 # gatekeeper mode flag
+        self._deepseek_skipped = False                  # gatekeeper skipped DeepSeek
 
         # LLM score feedback: {pinyin_key: {word: accumulated_weighted_score}}
         # Persisted alongside learner data to make map smarter over time
@@ -351,6 +352,7 @@ class Engine:
 
         if skip:
             self._llm_skipped = True
+            self._deepseek_skipped = True
             return scored
         else:
             self._llm_skipped = False
@@ -366,6 +368,7 @@ class Engine:
 
         # Gatekeeper mode: submit Ollama first; DeepSeek only if Ollama disagrees
         self._deepseek_deferred = False
+        self._deepseek_skipped = False
         if self._use_ollama and self.ollama.available:
             self._deepseek_deferred = True
             self._futures["ollama"] = self._executor.submit(
@@ -433,6 +436,7 @@ class Engine:
         if overlap >= 2:
             # Agree → skip DeepSeek
             self._deepseek_deferred = False
+            self._deepseek_skipped = True
             log.info("Ollama agrees with Map (%d/3 top3) → DeepSeek skipped", overlap)
             return
 
