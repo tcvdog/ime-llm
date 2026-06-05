@@ -27,6 +27,7 @@ class UserPreferenceDB:
         )
         self._syllable: dict[str, dict[str, float]] = {}
         self._phrase: dict[str, dict[str, int]] = {}
+        self._shortcut: dict[str, dict[str, int]] = {}
         self._dirty = False
         self.load()
 
@@ -53,13 +54,32 @@ class UserPreferenceDB:
             return None
         return max(weights, key=weights.get)
 
+    # ── Shortcut (abbreviation) preference ──
+
+    def record_shortcut(self, abbr: str, word: str):
+        """Record a user selection for a pinyin abbreviation (e.g. 'bbmm'→'爸爸妈妈')."""
+        weights = self._shortcut.setdefault(abbr, {})
+        weights[word] = weights.get(word, 0) + 1
+        self._dirty = True
+
+    def get_top_shortcut(self, abbr: str) -> str | None:
+        """Return the most-selected word for an abbreviation, or None."""
+        weights = self._shortcut.get(abbr, {})
+        if not weights:
+            return None
+        return max(weights, key=weights.get)
+
+    def get_shortcut_weights(self, abbr: str) -> dict[str, int]:
+        """Return all preference counts for an abbreviation."""
+        return dict(self._shortcut.get(abbr, {}))
+
     def save(self):
         """Persist weights to JSON."""
         if not self._dirty:
             return
         os.makedirs(os.path.dirname(self._save_path), exist_ok=True)
         self._trim()
-        data = {"syllable": self._syllable, "phrase": self._phrase}
+        data = {"syllable": self._syllable, "phrase": self._phrase, "shortcut": self._shortcut}
         try:
             with open(self._save_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -76,6 +96,7 @@ class UserPreferenceDB:
                 data = json.load(f)
             self._syllable = data.get("syllable", {})
             self._phrase = data.get("phrase", {})
+            self._shortcut = data.get("shortcut", {})
             self._dirty = False
         except (json.JSONDecodeError, OSError, IOError):
             pass
@@ -83,12 +104,14 @@ class UserPreferenceDB:
     def clear(self):
         self._syllable.clear()
         self._phrase.clear()
+        self._shortcut.clear()
         self._dirty = True
 
     def stats(self) -> dict:
         return {
             "syllable_entries": len(self._syllable),
             "phrase_entries": len(self._phrase),
+            "shortcut_entries": len(self._shortcut),
             "dirty": self._dirty,
             "save_path": self._save_path,
         }
@@ -118,3 +141,5 @@ class UserPreferenceDB:
             self._syllable.pop(next(iter(self._syllable)))
         while len(self._phrase) > _MAX_ENTRIES:
             self._phrase.pop(next(iter(self._phrase)))
+        while len(self._shortcut) > _MAX_ENTRIES:
+            self._shortcut.pop(next(iter(self._shortcut)))

@@ -241,6 +241,42 @@ class Engine:
         rules_set = set(rules) if rules else None
         return True, rules_set
 
+    @staticmethod
+    def _is_shortcut_input(pinyin: str) -> str | None:
+        """Check if input is a shortcut abbreviation (all single-letter initials).
+        Returns the compact abbreviation string, or None."""
+        from pinyin_map import segment_pinyin
+        syllables = segment_pinyin(pinyin.strip())
+        if len(syllables) >= 2 and all(len(s) == 1 for s in syllables):
+            return "".join(syllables)
+        return None
+
+    def _reorder_shortcut_candidates(
+        self,
+        scored: list[tuple[str, float, str]],
+        abbr: str,
+    ) -> list[tuple[str, float, str]]:
+        """Re-rank shortcut candidates: user's preferred word to front, 
+        then LLM-scored words, then original order."""
+        if not scored or len(scored) <= 1:
+            return scored
+
+        top_word = self.learner.get_top_shortcut(abbr)
+        if not top_word:
+            return scored  # no preference yet
+
+        # Find user's preferred word and move it to front
+        result = []
+        seen = set()
+        for c in scored:
+            if c[0] == top_word:
+                result.append(c)
+                seen.add(c[0])
+                break
+
+        result.extend(c for c in scored if c[0] not in seen)
+        return result
+
     def process_map(self, pinyin: str) -> list[tuple[str, float, str]]:
         """Map layer only (instant). For real-time typing feedback.
         
@@ -302,6 +338,11 @@ class Engine:
                 ]
                 scored.sort(key=lambda x: -x[1])
 
+        # Shortcut candidate re-ranking (user preference → front)
+        abbr = self._is_shortcut_input(pinyin)
+        if abbr:
+            scored = self._reorder_shortcut_candidates(scored, abbr)
+
         return scored
 
     def process(self, pinyin: str) -> list[tuple[str, float, str]]:
@@ -362,6 +403,11 @@ class Engine:
                     for t, sc, s in scored
                 ]
                 scored.sort(key=lambda x: -x[1])
+
+        # Shortcut candidate re-ranking (user preference → front)
+        abbr = self._is_shortcut_input(pinyin)
+        if abbr:
+            scored = self._reorder_shortcut_candidates(scored, abbr)
 
         texts = [t for t, _, _ in scored]
 
@@ -651,6 +697,10 @@ class Engine:
         syllables = segment_pinyin(pinyin.strip())
         key = " ".join(syllables) if len(syllables) > 1 else pinyin.strip()
         self.learner.record(key, text)
+        # If shortcut input, also record shortcut preference
+        abbr = self._is_shortcut_input(pinyin)
+        if abbr:
+            self.learner.record_shortcut(abbr, text)
         self._context = (self._context + text)[-self._context_max:]
 
         # Word recombination: when user edits via nav keys between multi-char selections
