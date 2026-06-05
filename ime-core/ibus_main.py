@@ -543,6 +543,43 @@ class IMEBusEngine(IBus.Engine):
             self.hide_auxiliary_text()
         return False
 
+    def _build_colored_aux(self, parts: list[str]) -> IBus.Text:
+        """Build auxiliary text with color attributes.
+
+        Colors: Map=white, Ollama=green, DeepSeek=red, IN/OUT=gray.
+        Falls back to plain text if attribute setting fails.
+        """
+        text = IBus.Text.new_from_string(" ".join(parts))
+        attr_list = IBus.AttrList()
+        pos = 0
+        color_map = {
+            "Map": 0xFFFFFF,       # white
+            "Ollama": 0x00CC44,    # green
+            "DeepSeek": 0xFF3333,  # red
+            "✗LLM": 0xFF8800,      # orange
+            "LLM:OFF": 0xFF8800,   # orange
+            "IN:": 0xAAAAAA,       # gray
+            "OUT:": 0xAAAAAA,      # gray
+        }
+        for part in parts:
+            start = pos
+            end = start + len(part)
+            pos = end + 1  # +1 for space joiner
+            for keyword, color in color_map.items():
+                if part.startswith(keyword):
+                    try:
+                        from gi.repository import IBus as IB
+                        attr = IB.Attribute(
+                            IB.AttrType.FOREGROUND, start, end, color,
+                        )
+                        attr_list.insert(attr)
+                    except Exception:
+                        pass
+                    break
+        if len(attr_list) > 0:
+            text.attr_list = attr_list
+        return text
+
     def _update_ui(self):
         """Update preedit text, auxiliary source indicator, and lookup table."""
         try:
@@ -592,7 +629,7 @@ class IMEBusEngine(IBus.Engine):
 
             aux_text = " ".join(parts)
             if self._pinyin:
-                aux = IBus.Text.new_from_string(aux_text)
+                aux = self._build_colored_aux(parts) if len(parts) > 1 else IBus.Text.new_from_string(aux_text)
                 self.update_auxiliary_text(aux, True)
             else:
                 self.hide_auxiliary_text()

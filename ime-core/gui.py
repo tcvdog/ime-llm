@@ -25,9 +25,9 @@ FONT_LARGE = ("Microsoft YaHei", 14)
 FONT_SMALL = ("Microsoft YaHei", 10)
 FONT_MONO = ("Consolas", 12)
 
-COLOR_LLM = "#4CAF50"
-COLOR_OLLAMA = "#2196F3"
-COLOR_MAP = "#9E9E9E"
+COLOR_LLM = "#E53935"  # red for DeepSeek
+COLOR_OLLAMA = "#43A047"  # green for Ollama
+COLOR_MAP = "#FFFFFF"  # white for Map
 COLOR_BG = "#F5F5F5"
 COLOR_CANDIDATE = "#E3F2FD"
 COLOR_PAGE_ACTIVE = "#FF9800"
