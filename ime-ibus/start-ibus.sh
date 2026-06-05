@@ -1,58 +1,56 @@
-#!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────
-# start-ibus.sh — Start/Restart IBus daemon for current session
-#
-# Run this if the IME doesn't appear after installation:
-#   bash start-ibus.sh
-#
-# This creates a persistent systemd --user service for ibus-daemon.
-# ─────────────────────────────────────────────────────────────
+#!/bin/bash
+# ime-ibus-start.sh — 启动 IME LLM 输入法引擎
+# 
+# 用法:
+#   bash ime-ibus-start.sh          # 启动并切换到 ime-llm
+#   bash ime-ibus-start.sh stop     # 停止 ime-llm
 
-set -euo pipefail
+set -e
 
-if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-    echo "Warning: No display detected. Are you in a desktop session?"
-fi
+ENGINE_NAME="ime-llm"
+ENGINE_SCRIPT="/usr/share/ibus-ime-llm/ibus_main.py"
 
-# Kill any existing ibus-daemon
-pkill ibus-daemon 2>/dev/null || true
-sleep 1
+start() {
+    echo "==> 启动 IME LLM 引擎..."
+    
+    # 先杀掉残留进程
+    for pid in $(pgrep -f "ibus_main.py" 2>/dev/null); do
+        kill "$pid" 2>/dev/null || true
+    done
+    
+    # 后台启动引擎
+    nohup python3 "$ENGINE_SCRIPT" --ibus >/dev/null 2>&1 &
+    
+    # 等待注册
+    for i in $(seq 1 8); do
+        sleep 1
+        if ibus engine 2>/dev/null | grep -q "$ENGINE_NAME"; then
+            echo "  ✓ 引擎已在运行中"
+            return 0
+        fi
+        # 尝试切换
+        ibus engine "$ENGINE_NAME" 2>/dev/null && {
+            echo "  ✓ 已切换到 $ENGINE_NAME"
+            return 0
+        }
+    done
+    
+    echo "  ⚠ 启动完成，尝试切换..."
+    ibus engine "$ENGINE_NAME" 2>/dev/null || true
+}
 
-# Clean stale socket state
-rm -rf ~/.cache/ibus
+stop() {
+    echo "==> 停止 IME LLM 引擎..."
+    for pid in $(pgrep -f "ibus_main.py" 2>/dev/null); do
+        kill "$pid" 2>/dev/null || true
+    done
+    echo "  ✓ 已停止"
+    ibus engine libpinyin 2>/dev/null || true
+}
 
-echo "Starting ibus-daemon..."
-
-# Method 1: systemd --user (preferred, persists across tool sessions)
-if systemctl --user list-units --all 2>/dev/null | grep -q 'dbus'; then
-    mkdir -p ~/.config/systemd/user/
-    cat > ~/.config/systemd/user/ibus-daemon.service << 'SERVICE'
-[Unit]
-Description=IBus Daemon
-After=graphical-session.target
-
-[Service]
-ExecStart=/usr/bin/ibus-daemon --panel disable --xim
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-SERVICE
-
-    systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user start ibus-daemon.service 2>/dev/null || true
-    sleep 2
-
-    if systemctl --user is-active ibus-daemon.service 2>/dev/null | grep -q active; then
-        echo "✅ ibus-daemon running via systemd (PID: $(systemctl --user show -p MainPID ibus-daemon.service | cut -d= -f2))"
-        exit 0
-    fi
-fi
-
-# Method 2: Direct launch with nohup
-ibus-daemon --panel disable --xim &
-sleep 2
-echo "✅ ibus-daemon started in background"
-echo ""
-echo "Check with: ibus list-engine | grep ime-llm"
+case "${1:-start}" in
+    start|--start) start ;;
+    stop|--stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "用法: $0 [start|stop|restart]"; exit 1 ;;
+esac
