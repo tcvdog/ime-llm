@@ -794,50 +794,32 @@ class Engine:
         """Generate next-word predictions from current context.
 
         After user commits text, predicts likely next characters/words
-        based on WORD_MAP completions and user phrase history.
+        based on learned bigrams (personalized) and common Chinese function words.
         Returns up to 6 candidate strings.
         """
         ctx = self._context.strip()
         if not ctx:
             return []
-        last_char = ctx[-1]
 
-        import pinyin_map as pm
-        # Build char→pinyin map lazily
-        if not hasattr(self, '_char_to_syl'):
-            self._char_to_syl = {}
-            for syl, chars in pm.SYLLABLE_MAP.items():
-                for c in chars:
-                    if c not in self._char_to_syl:
-                        self._char_to_syl[c] = syl
+        # Common Chinese next-word candidates (valid after almost any word)
+        COMMON_NEXT = ["是", "的", "了", "在", "有", "不", "和", "就", "也",
+                       "都", "要", "会", "能", "去", "来", "好", "很", "太",
+                       "更", "最", "这", "那", "一", "多", "大", "小", "上",
+                       "下", "里", "个", "些", "次", "人", "事", "时", "可以",
+                       "什么", "怎么", "应该", "需要", "没有"]
 
-        syl = self._char_to_syl.get(last_char, "")
-        if not syl:
-            return []
-
-        # First: check bigram data (personalized, from user's typing history)
+        # Bigram data (personalized, from user's typing history)
         bigram_hits: list[tuple[str, int]] = []
         prev_bigram = self._bigrams.get(self._last_committed_text, {})
         if prev_bigram:
             bigram_hits = sorted(prev_bigram.items(), key=lambda x: -x[1])
 
-        # Second: find WORD_MAP entries starting with this character's syllable
-        wordmap_hits = []
-        seen = set()
-        for pk, words in pm.WORD_MAP.items():
-            pinyin_syls = pk.split()
-            if len(pinyin_syls) >= 2 and pinyin_syls[0] == syl:
-                for w in words:
-                    if len(w) >= 2 and w[0] == last_char and w not in seen:
-                        seen.add(w)
-                        wordmap_hits.append(w)
-
-        # Merge: bigram hits first (personalized), then wordmap, deduped
+        # Merge: bigram first (personalized), then common words (fallback), deduped
         result = []
         for w, _ in bigram_hits:
             if w not in result:
                 result.append(w)
-        for w in wordmap_hits:
+        for w in COMMON_NEXT:
             if w not in result:
                 result.append(w)
         return result[:6]
