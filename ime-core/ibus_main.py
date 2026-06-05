@@ -118,6 +118,7 @@ class IMEBusEngine(IBus.Engine):
         self._pinyin = ""          # current composing pinyin
         self._candidates = []      # [(text, source)] all candidates
         self._enabled = True
+        self._nav_edit = False     # user navigated (arrows/backspace) since last commit
 
         # ── IBus UI components ──
         # Horizontal layout: 2 rows × 5 candidates per page
@@ -179,6 +180,7 @@ class IMEBusEngine(IBus.Engine):
 
         # ── Letter keys (a-z) — accumulate pinyin ──
         if 0x61 <= keyval <= 0x7a:
+            self._nav_edit = False  # new pinyin input → nav chain broken
             self._pinyin += chr(keyval)
             self._refresh_candidates()
             self._update_ui()
@@ -239,6 +241,7 @@ class IMEBusEngine(IBus.Engine):
                     self._candidates = []
                 self._update_ui()
                 return True
+            self._nav_edit = True  # backspace with no composing = document nav
             return False
 
         # ── Escape — cancel composing ──
@@ -248,6 +251,13 @@ class IMEBusEngine(IBus.Engine):
                 self._candidates = []
                 self._update_ui()
                 return True
+            return False
+
+        # ── Navigation keys (arrows, Delete) when not composing — mark nav edit ──
+        if keyval in (IBus.KEY_Left, IBus.KEY_Right, IBus.KEY_Up, IBus.KEY_Down,
+                      IBus.KEY_Delete, IBus.KEY_KP_Delete):
+            if not self._pinyin:
+                self._nav_edit = True
             return False
 
         # ── Punctuation keys — commit + output Chinese punctuation ──
@@ -300,6 +310,7 @@ class IMEBusEngine(IBus.Engine):
                 return True
         except Exception as exc:
             log.error("do_page_up error: %s", exc)
+        self._nav_edit = True
         return False
 
     def do_page_down(self):
@@ -310,6 +321,7 @@ class IMEBusEngine(IBus.Engine):
                 return True
         except Exception as exc:
             log.error("do_page_down error: %s", exc)
+        self._nav_edit = True
         return False
 
     def do_cursor_down(self):
@@ -365,7 +377,8 @@ class IMEBusEngine(IBus.Engine):
             if index < 0 or index >= len(self._candidates):
                 return
             text, source = self._candidates[index]
-            self._engine.select(text, self._pinyin)
+            self._engine.select(text, self._pinyin, nav_edit=self._nav_edit)
+            self._nav_edit = False
 
             log.info("Commit: %s (source=%s, pinyin=%s)", text, source, self._pinyin)
 

@@ -12,6 +12,7 @@ The later LLM gets #2. The user's past selections stay at #1 via phrase_boost.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +22,8 @@ from config import load_config, DEFAULT_CONFIG
 from pinyin_map import segment_pinyin, segment_pinyin_all, generate_candidates
 from llm_backend import LLMBackend
 from learner import UserPreferenceDB
+
+log = logging.getLogger("ime-engine")
 
 VALID_MODES = ("map_only", "map_ollama", "map_deepseek", "map_ollama_deepseek")
 LLM_SOURCES = ("ollama", "deepseek")
@@ -94,6 +97,7 @@ class Engine:
         self._futures: dict[str, object] = {}          # source -> Future
         self._applied: set[str] = set()                 # sources already merged into UI
         self._pending_map_data: dict = {}               # stored for late submissions
+        self._deepseek_deferred = False                 # gatekeeper mode flag
 
         # LLM score feedback: {pinyin_key: {word: accumulated_weighted_score}}
         # Persisted alongside learner data to make map smarter over time
@@ -329,12 +333,15 @@ class Engine:
             "pinyin_key": pinyin_key,
         }
 
-        # Submit BOTH Ollama and DeepSeek simultaneously as async tasks
+        # Gatekeeper mode: submit Ollama first; DeepSeek only if Ollama disagrees
+        self._deepseek_deferred = False
         if self._use_ollama and self.ollama.available:
+            self._deepseek_deferred = True
             self._futures["ollama"] = self._executor.submit(
                 self._do_rank, "ollama", pinyin, texts, self._context, user_hints,
             )
-        if self._use_deepseek and self.llm.available:
+        elif self._use_deepseek and self.llm.available:
+            # No Ollama available → submit DeepSeek directly
             self._futures["deepseek"] = self._executor.submit(
                 self._do_rank, "deepseek", pinyin, texts, self._context, user_hints,
             )
@@ -372,6 +379,43 @@ class Engine:
         phrase_counts = self.learner._phrase.get(pinyin_key, {})
         user_count = phrase_counts.get(top_word, 0)
         return user_count >= min_sel
+
+    def _maybe_submit_deepseek(self, ollama_ranking: list[str]):
+        """Gatekeeper: submit DeepSeek only if Ollama disagrees with Map.
+
+        Compares Ollama's top 3 with Map's top 3.
+        If ≥ 2 match → they agree, skip DeepSeek.
+        Otherwise → submit DeepSeek for a second opinion.
+        """
+        data = self._pending_map_data
+        if not data:
+            self._deepseek_deferred = False
+            return
+        # If DeepSeek already submitted somehow, don't resubmit
+        if "deepseek" in self._futures and "deepseek" not in self._applied:
+            return
+
+        map_top3 = data.get("texts", [])[:3]
+        ollama_top3 = ollama_ranking[:3]
+        overlap = len(set(map_top3) & set(ollama_top3))
+
+        if overlap >= 2:
+            # Agree → skip DeepSeek
+            self._deepseek_deferred = False
+            log.info("Ollama agrees with Map (%d/3 top3) → DeepSeek skipped", overlap)
+            return
+
+        # Disagree → submit DeepSeek
+        self._deepseek_deferred = False
+        pinyin = data.get("pinyin", "")
+        texts = data.get("texts", [])
+        context = data.get("context", "")
+        user_hints = data.get("user_hints", "")
+        if self._use_deepseek and self.llm.available and texts:
+            log.info("Ollama disagrees with Map (%d/3) → submitting DeepSeek", overlap)
+            self._futures["deepseek"] = self._executor.submit(
+                self._do_rank, "deepseek", pinyin, texts, context, user_hints,
+            )
 
     def _do_rank(
         self, source: str, pinyin: str, candidates: list[str],
@@ -436,6 +480,7 @@ class Engine:
 
         Returns list of (source, pinyin, reordered_list, latency) for each newly done task.
         Also records token usage from DeepSeek responses to cumulative stats.
+        In gatekeeper mode, submits DeepSeek if Ollama disagrees with Map.
         """
         results = []
         for source in ("ollama", "deepseek"):
@@ -453,8 +498,17 @@ class Engine:
                     if src == "deepseek" and (pt or ct):
                         import token_stats
                         token_stats.record(prompt=pt, completion=ct)
+                    # Gatekeeper: Ollama returned → check if DeepSeek is needed
+                    if src == "ollama" and self._deepseek_deferred:
+                        self._maybe_submit_deepseek(reordered)
+                else:
+                    # Ollama failed/returned None → submit DeepSeek if deferred
+                    if source == "ollama" and self._deepseek_deferred:
+                        self._maybe_submit_deepseek([])
             except Exception:
-                pass
+                # Ollama failed/returned None → submit DeepSeek if deferred
+                if source == "ollama" and self._deepseek_deferred:
+                    self._maybe_submit_deepseek([])
             self._applied.add(source)
         return results
 
@@ -536,11 +590,18 @@ class Engine:
         scores = self._llm_scores.setdefault(key, {})
         scores[word] = max(scores.get(word, 0), bonus)
 
-    def select(self, text: str, pinyin: str):
+    def select(self, text: str, pinyin: str, nav_edit: bool = False):
         syllables = segment_pinyin(pinyin.strip())
         key = " ".join(syllables) if len(syllables) > 1 else pinyin.strip()
         self.learner.record(key, text)
         self._context = (self._context + text)[-self._context_max:]
+
+        # Word recombination: when user edits via nav keys between multi-char selections
+        if nav_edit and len(text) >= 2 and hasattr(self, '_last_multi_word'):
+            prev_text, prev_key = self._last_multi_word
+            self._recombine_compound(prev_text, text, prev_key, key)
+        # Track last multi-character word
+        self._last_multi_word = (text, key) if len(text) >= 2 else None
 
         now = time.time()
         self._selection_chain = [
@@ -660,6 +721,31 @@ class Engine:
         if combined_pinyin in pm.WORD_MAP and compound in pm.WORD_MAP[combined_pinyin]:
             self._update_llm_scores(combined_pinyin, compound, 0.6)
             self.learner.record(combined_pinyin, compound)
+
+    def _recombine_compound(self, word1: str, word2: str, key1: str, key2: str):
+        """Recombine characters from two multi-character words into valid compounds.
+
+        E.g. 首相 (shou xiang) + 机器 (ji qi) → 相机 (xiang ji), 手机 (shou ji)
+        Only boosts compounds that exist in WORD_MAP.
+        Called when user navigated (arrows/backspace) between selections.
+        """
+        import pinyin_map as pm
+        syl1 = key1.split()
+        syl2 = key2.split()
+        for i, c1 in enumerate(word1):
+            for j, c2 in enumerate(word2):
+                # Forward: c1 + c2 (e.g. 相+机→相机)
+                compound = c1 + c2
+                pk = f"{syl1[i]} {syl2[j]}"
+                if pk in pm.WORD_MAP and compound in pm.WORD_MAP[pk]:
+                    self._update_llm_scores(pk, compound, 0.5)
+                    self.learner.record(pk, compound)
+                # Reverse: c2 + c1 (e.g. 机+相→机相 - unlikely but check)
+                compound2 = c2 + c1
+                pk2 = f"{syl2[j]} {syl1[i]}"
+                if pk2 in pm.WORD_MAP and compound2 in pm.WORD_MAP[pk2]:
+                    self._update_llm_scores(pk2, compound2, 0.3)
+                    self.learner.record(pk2, compound2)
 
     def learn_late_llm_result(self, pinyin: str, refined: list[str]):
         if not refined:
