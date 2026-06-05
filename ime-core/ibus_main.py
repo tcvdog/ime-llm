@@ -447,6 +447,7 @@ class IMEBusEngine(IBus.Engine):
             self.commit_text(IBus.Text.new_from_string(cjk_punct))
             self._pinyin = ""
             self._candidates = []
+            self._engine._predictions.clear()
             self._update_ui()
         except Exception as exc:
             log.error("_commit_with_punctuation crashed: %s", exc, exc_info=True)
