@@ -259,16 +259,13 @@ class IMEBusEngine(IBus.Engine):
             self._flush_pending()
             return False
 
-        # ── Space — select top candidate ──
+        # ── Space — select top candidate or input space ──
         if keyval == IBus.KEY_space:
             if self._pinyin and self._candidates:
                 self._llm_can_update = False
                 self._commit(0)
                 return True
-            # Prediction mode: space selects first prediction
-            if not self._pinyin and self._engine._predictions:
-                self._commit_prediction(0)
-                return True
+            # No pinyin → always input space (even if predictions are showing)
             return False
 
         # ── Return — clear predictions + newline (one press) ──
