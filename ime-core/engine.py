@@ -84,6 +84,7 @@ class Engine:
         self._context = ""
         self._context_max = 200
         self._llm_skipped = False
+        self._predictions: list[str] = []  # next-word predictions when idle
 
         # Compound detection
         self._selection_chain: list[tuple[str, str, float]] = []
@@ -201,6 +202,7 @@ class Engine:
         Called on every keystroke. Returns immediately with map candidates.
         Considers all valid pinyin segmentation paths, weighted by path score.
         """
+        self._predictions.clear()
         if not pinyin or not pinyin.strip():
             return []
 
@@ -621,6 +623,9 @@ class Engine:
         # User direct selection → full weight in LLM scores
         self._update_llm_scores(key, text, 1.0)
 
+        # Generate next-word predictions from context
+        self._predictions = self._generate_predictions()
+
         # Record what user selected for late LLM comparison
         self._last_selection: dict[str, str] = {}
         self._last_selection[key] = text
@@ -746,6 +751,48 @@ class Engine:
                 if pk2 in pm.WORD_MAP and compound2 in pm.WORD_MAP[pk2]:
                     self._update_llm_scores(pk2, compound2, 0.3)
                     self.learner.record(pk2, compound2)
+
+    def _generate_predictions(self) -> list[str]:
+        """Generate next-word predictions from current context.
+
+        After user commits text, predicts likely next characters/words
+        based on WORD_MAP completions and user phrase history.
+        Returns up to 6 candidate strings.
+        """
+        ctx = self._context.strip()
+        if not ctx:
+            return []
+        last_char = ctx[-1]
+
+        import pinyin_map as pm
+        # Build char→pinyin map lazily
+        if not hasattr(self, '_char_to_syl'):
+            self._char_to_syl = {}
+            for syl, chars in pm.SYLLABLE_MAP.items():
+                for c in chars:
+                    if c not in self._char_to_syl:
+                        self._char_to_syl[c] = syl
+
+        syl = self._char_to_syl.get(last_char, "")
+        if not syl:
+            return []
+
+        # Find WORD_MAP entries starting with this character's syllable
+        candidates = []
+        seen = set()
+        for pk, words in pm.WORD_MAP.items():
+            syllables = pk.split()
+            if len(syllables) >= 2 and syllables[0] == syl:
+                for w in words:
+                    if len(w) >= 2 and w[0] == last_char and w not in seen:
+                        seen.add(w)
+                        # Extract the "continuation" part (e.g. 今→天 for 今天)
+                        continuation = w[1:]
+                        if continuation:
+                            candidates.append(continuation)
+        # Also add the full word as a prediction
+        result = list(dict.fromkeys(candidates))[:6]
+        return result
 
     def learn_late_llm_result(self, pinyin: str, refined: list[str]):
         if not refined:

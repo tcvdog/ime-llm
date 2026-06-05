@@ -199,16 +199,25 @@ class IMEBusEngine(IBus.Engine):
                 else:
                     self._flush_pending()
                     return False
-            else:
-                self._flush_pending()
-                return False
-            return True
+                return True
+            # Prediction mode: number selects prediction
+            if not self._pinyin and self._engine._predictions:
+                preds = self._engine._predictions
+                if idx < len(preds):
+                    self._commit_prediction(idx)
+                    return True
+            self._flush_pending()
+            return False
 
         # ── Space — select top candidate ──
         if keyval == IBus.KEY_space:
             if self._pinyin and self._candidates:
                 self._llm_can_update = False
                 self._commit(0)
+                return True
+            # Prediction mode: space selects first prediction
+            if not self._pinyin and self._engine._predictions:
+                self._commit_prediction(0)
                 return True
             return False
 
@@ -392,6 +401,21 @@ class IMEBusEngine(IBus.Engine):
             self._pinyin = ""
             self._candidates = []
 
+    def _commit_prediction(self, index: int):
+        """Commit a prediction (next-word suggestion) as text."""
+        try:
+            preds = self._engine._predictions
+            if index < 0 or index >= len(preds):
+                return
+            text = preds[index]
+            log.info("Prediction commit: %s", text)
+            self.commit_text(IBus.Text.new_from_string(text))
+            self._engine._context += text
+            self._engine._predictions = self._engine._generate_predictions()
+            self._update_ui()
+        except Exception as exc:
+            log.error("_commit_prediction crashed: %s", exc, exc_info=True)
+
     def _commit_raw_pinyin(self):
         """Enter key: commit raw pinyin letters as text."""
         try:
@@ -564,6 +588,18 @@ class IMEBusEngine(IBus.Engine):
                     min(saved_pos, max(0, len(self._candidates) - 1))
                 )
                 self.update_lookup_table(self._lookup_table, True)
+            elif not self._pinyin and self._engine._predictions:
+                # ── Prediction mode: show next-word predictions ──
+                self._lookup_table.clear()
+                for text in self._engine._predictions:
+                    label = "\u25b8" + text
+                    self._lookup_table.append_candidate(
+                        IBus.Text.new_from_string(label)
+                    )
+                self._lookup_table.set_cursor_pos(0)
+                self.update_lookup_table(self._lookup_table, True)
+                aux = IBus.Text.new_from_string("\u25b8 联想")
+                self.update_auxiliary_text(aux, True)
             else:
                 self.hide_lookup_table()
         except Exception as exc:
