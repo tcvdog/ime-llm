@@ -271,8 +271,13 @@ class IMEBusEngine(IBus.Engine):
                 return True
             return False
 
-        # ── Return — commit raw pinyin letters ──
+        # ── Return — clear predictions + newline (one press) ──
         if keyval in (IBus.KEY_Return, IBus.KEY_KP_Enter):
+            # Clear predictions if showing, then let Enter pass through
+            if not self._pinyin and self._engine._predictions:
+                self._engine._predictions = []
+                self._update_ui()
+            # Commit raw pinyin letters
             if self._pinyin:
                 self._commit_raw_pinyin()
                 return True
