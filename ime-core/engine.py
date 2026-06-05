@@ -166,6 +166,9 @@ class Engine:
                     total_words = sum(len(v) for v in pm.WORD_MAP.values())
                     if new_count > old_count:
                         print(f"[词库] 加载 {path}: {old_count} → {new_count} 组合, {total_words} 词")
+                    # Rebuild shortcut map with the expanded WORD_MAP
+                    pm.rebuild_shortcut_map()
+                    print(f"[简缩] {len(pm.SHORTCUT_MAP)} 缩写映射已就绪")
                     return
                 except Exception as e:
                     print(f"[词库] 加载失败 {path}: {e}")

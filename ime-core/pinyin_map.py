@@ -1459,6 +1459,54 @@ for _syl in list(SYLLABLE_MAP.keys()):
         FUZZY_ALT_MAP[_syl] = list(_alts.items())
 del _CHINESE_INITIALS, _syl, _alts, _rule, _result
 
+# ── Pinyin abbreviation shortcut map ────────────────────────
+# "bbmm" → "爸爸妈妈", "yhrx" → "一见如故"
+# Auto-built from WORD_MAP entries: first letter of each syllable.
+# Rebuilt when engine loads external word dict.
+SHORTCUT_MAP: dict[str, list[str]] = {}
+_CACHED_WORD_KEYS: set[str] = set()  # track which WORD_MAP keys contributed
+
+
+def _build_shortcut_map():
+    """Rebuild SHORTCUT_MAP from current WORD_MAP entries."""
+    global SHORTCUT_MAP, _CACHED_WORD_KEYS
+    from collections import defaultdict
+    new_map: dict[str, list[str]] = defaultdict(list)
+    new_keys: set[str] = set()
+    for pk, words in WORD_MAP.items():
+        syls = pk.split()
+        if len(syls) >= 2:
+            abbr = "".join(s[0] for s in syls)
+            new_keys.add(pk)
+            for w in words:
+                if w not in new_map[abbr]:
+                    new_map[abbr].append(w)
+    SHORTCUT_MAP = dict(new_map)
+    _CACHED_WORD_KEYS = new_keys
+
+
+def rebuild_shortcut_map():
+    """Rebuild shortcut map — call after loading external word dict into WORD_MAP."""
+    _build_shortcut_map()
+
+
+# Initial build from hardcoded WORD_MAP
+_build_shortcut_map()
+
+
+def check_shortcut(input_text: str) -> list[str]:
+    """Check if pinyin input matches a shortcut abbreviation.
+    
+    Returns matching words, or empty list if no match.
+    Only matches when all syllables are single-letter initials (简拼).
+    """
+    compact = input_text.strip().replace(" ", "")
+    if not compact:
+        return []
+    # Verify all chars are single letters (valid pinyin initials)
+    if not all(c in "abcdefghijklmnopqrstuvwxyz" for c in compact.lower()):
+        return []
+    return list(SHORTCUT_MAP.get(compact, []))
 
 def get_char_tuples(
     syllable: str,
@@ -1736,6 +1784,15 @@ def generate_candidates(
     candidates: list[str] = []
     seen: set[str] = set()
     pinyin_key = " ".join(syllables)
+
+    # Step 0: Pinyin abbreviation shortcut lookup
+    # e.g. "bbmm" → "爸爸妈妈", "yhrx" → "一见如故"
+    if all(len(s) == 1 for s in syllables):
+        shortcut_words = check_shortcut(pinyin_input.strip())
+        for w in shortcut_words:
+            if w not in seen:
+                candidates.append(w)
+                seen.add(w)
 
     # Step 1: WORD_MAP lookup (exact multi-syllable words)
     word_candidates = WORD_MAP.get(pinyin_key, []).copy()
