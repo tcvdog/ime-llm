@@ -39,6 +39,7 @@ if _core_dir not in sys.path:
 
 from engine import Engine
 from config import load_config
+from ime_log import log_key, log_commit, log_state, log_engine, log_candidates
 
 log = logging.getLogger("ime-ibus")
 _DEFAULT_OBJECT_PATH = "/org/freedesktop/IBus/engine/IMEEngine/0"
@@ -166,6 +167,43 @@ class IMEBusEngine(IBus.Engine):
 
         if state & IBus.ModifierType.RELEASE_MASK:
             return False
+
+        # ── Log every key event ──
+        _KEY_NAMES = {
+            IBus.KEY_BackSpace: "Bksp",
+            IBus.KEY_Left: "Left",
+            IBus.KEY_Right: "Right",
+            IBus.KEY_Up: "Up",
+            IBus.KEY_Down: "Down",
+            IBus.KEY_Return: "Enter",
+            IBus.KEY_Escape: "Esc",
+            IBus.KEY_space: "Space",
+            IBus.KEY_Delete: "Delete",
+            IBus.KEY_Tab: "Tab",
+            IBus.KEY_F2: "F2",
+            IBus.KEY_equal: "=", IBus.KEY_plus: "+",
+            IBus.KEY_minus: "-",
+            IBus.KEY_KP_Add: "KP+", IBus.KEY_KP_Subtract: "KP-",
+            IBus.KEY_KP_Enter: "KPEnter",
+            IBus.KEY_KP_Delete: "KPDelete",
+        }
+        key_name = _KEY_NAMES.get(keyval)
+        if key_name is None:
+            if 0x30 <= keyval <= 0x39:
+                key_name = chr(keyval)
+            elif 0x41 <= keyval <= 0x5a:
+                key_name = chr(keyval).lower()
+            elif 0x61 <= keyval <= 0x7a:
+                key_name = chr(keyval)
+            elif keyval < 256:
+                key_name = chr(keyval) if chr(keyval).isprintable() else f"0x{keyval:02x}"
+            else:
+                try:
+                    key_name = chr(keyval)
+                except ValueError:
+                    key_name = f"0x{keyval:04x}"
+        # Log the key event
+        log_key(key_name, self._pinyin)
 
         # ── Ctrl+Shift+L — toggle LLM on/off ──
         if (state & IBus.ModifierType.CONTROL_MASK
@@ -296,6 +334,7 @@ class IMEBusEngine(IBus.Engine):
         try:
             self._enabled = True
             log.info("Engine enabled")
+            log_state("enabled")
         except Exception as exc:
             log.error("do_enable error: %s", exc)
 
@@ -306,6 +345,7 @@ class IMEBusEngine(IBus.Engine):
             self._candidates = []
             self._update_ui()
             log.info("Engine disabled")
+            log_state("disabled")
         except Exception as exc:
             log.error("do_disable error: %s", exc)
 
@@ -402,6 +442,7 @@ class IMEBusEngine(IBus.Engine):
             self._nav_edit = False
 
             log.info("Commit: %s (source=%s, pinyin=%s)", text, source, self._pinyin)
+            log_commit(text, self._pinyin, source=source)
 
             self.commit_text(IBus.Text.new_from_string(text))
 
