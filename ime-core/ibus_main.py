@@ -174,9 +174,8 @@ class IMEBusEngine(IBus.Engine):
             self._toggle_llm()
             return True
 
-        # ── Ctrl+; — re-rank with DeepSeek, exclude current top candidate ──
-        if (state & IBus.ModifierType.CONTROL_MASK
-                and keyval == ord(';')):
+        # ── F2 — re-rank with DeepSeek, exclude current top candidate ──
+        if keyval == IBus.KEY_F2:
             if self._pinyin and self._candidates:
                 self._request_deepseek_refine()
             return True
