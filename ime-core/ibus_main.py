@@ -428,10 +428,10 @@ class IMEBusEngine(IBus.Engine):
             if not self._pinyin or not self._candidates:
                 return
             top = self._candidates[0][0]
-            exclude = list(dict.fromkeys(t for t, _ in self._candidates[:3]))
+            all_candidates = list(dict.fromkeys(t for t, _ in self._candidates))
             self._engine.request_deepseek_refine(
                 pinyin=self._pinyin,
-                candidates=exclude,
+                candidates=all_candidates[:15],
                 exclude=[top],
                 context=self._engine.context,
             )
