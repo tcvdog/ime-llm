@@ -84,6 +84,9 @@ class Engine:
         # Compound detection
         self._selection_chain: list[tuple[str, str, float]] = []
         self._compound_window = 3.0
+        # Recent single-char selections for compound mining (keep last 50)
+        self._single_char_history: list[tuple[str, str]] = []
+        self._single_char_max = 50
 
         # Parallel LLM pool (2 workers: one for Ollama, one for DeepSeek)
         self._executor = ThreadPoolExecutor(max_workers=2)
@@ -505,6 +508,13 @@ class Engine:
         self._selection_chain.append((key, text, now))
         self._detect_compound()
 
+        # Track single-character selections for compound mining (FIFO, last 50)
+        if len(text) == 1 and " " not in key:
+            self._mine_cross_compound(key, text)
+            self._single_char_history.append((key, text))
+            if len(self._single_char_history) > self._single_char_max:
+                self._single_char_history.pop(0)
+
         # User direct selection → full weight in LLM scores
         self._update_llm_scores(key, text, 1.0)
 
@@ -590,6 +600,24 @@ class Engine:
             combined_text = "".join(texts)
             if len(combined_key.split()) >= 2 and len(combined_text) == len(combined_key.split()):
                 self.learner.record(combined_key, combined_text)
+
+    def _mine_cross_compound(self, key: str, char: str):
+        """Mine compounds from adjacent single-character selections.
+
+        When user selects single chars in sequence (e.g., '相' then '机'),
+        pairs them to form '相机' and boosts it for 'xiang ji'.
+        Only considers the immediately preceding single-char selection.
+        """
+        if len(self._single_char_history) < 1:
+            return
+        import pinyin_map as pm
+        prev_key, prev_char = self._single_char_history[-1]
+        # Check: prev_char + current_char (e.g. 相+机→相机)
+        compound = prev_char + char
+        combined_pinyin = f"{prev_key} {key}"
+        if combined_pinyin in pm.WORD_MAP and compound in pm.WORD_MAP[combined_pinyin]:
+            self._update_llm_scores(combined_pinyin, compound, 0.6)
+            self.learner.record(combined_pinyin, compound)
 
     def learn_late_llm_result(self, pinyin: str, refined: list[str]):
         if not refined:
