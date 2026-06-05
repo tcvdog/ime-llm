@@ -85,6 +85,10 @@ class Engine:
         self._context_max = 200
         self._llm_skipped = False
         self._predictions: list[str] = []  # next-word predictions when idle
+        self._bigrams: dict[str, dict[str, int]] = {}  # {prev_text: {next_text: count}}
+        self._last_committed_text: str = ""             # last selected word for bigram learning
+
+        self._load_bigrams()
 
         # Compound detection
         self._selection_chain: list[tuple[str, str, float]] = []
@@ -172,6 +176,11 @@ class Engine:
             os.path.dirname(os.path.abspath(__file__)), "data", "llm_scores.json",
         )
 
+    def _bigrams_path(self) -> str:
+        return os.path.join(
+            os.path.expanduser("~/.cache/ime-llm"), "bigrams.json",
+        )
+
     def _load_llm_scores(self):
         path = self._llm_scores_path()
         if os.path.exists(path):
@@ -184,6 +193,16 @@ class Engine:
             except Exception:
                 self._llm_scores = {}
 
+    def _load_bigrams(self):
+        """Load persisted bigram data."""
+        path = self._bigrams_path()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._bigrams = json.load(f)
+            except Exception:
+                self._bigrams = {}
+
     def save_llm_scores(self):
         """Persist accumulated LLM feedback scores."""
         path = self._llm_scores_path()
@@ -191,6 +210,16 @@ class Engine:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._llm_scores, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def save_bigrams(self):
+        """Persist bigram prediction data."""
+        path = self._bigrams_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._bigrams, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -626,6 +655,15 @@ class Engine:
         # Generate next-word predictions from context
         self._predictions = self._generate_predictions()
 
+        # Learn bigram: if there was a previous word, record (prev → current)
+        if self._last_committed_text and len(text) >= 1:
+            bigram = self._bigrams.setdefault(self._last_committed_text, {})
+            bigram[text] = bigram.get(text, 0) + 1
+        self._last_committed_text = text
+
+        # Re-generate predictions with updated last_committed_text for accurate bigram lookup
+        self._predictions = self._generate_predictions()
+
         # Record what user selected for late LLM comparison
         self._last_selection: dict[str, str] = {}
         self._last_selection[key] = text
@@ -777,22 +815,32 @@ class Engine:
         if not syl:
             return []
 
-        # Find WORD_MAP entries starting with this character's syllable
-        candidates = []
+        # First: check bigram data (personalized, from user's typing history)
+        bigram_hits: list[tuple[str, int]] = []
+        prev_bigram = self._bigrams.get(self._last_committed_text, {})
+        if prev_bigram:
+            bigram_hits = sorted(prev_bigram.items(), key=lambda x: -x[1])
+
+        # Second: find WORD_MAP entries starting with this character's syllable
+        wordmap_hits = []
         seen = set()
         for pk, words in pm.WORD_MAP.items():
-            syllables = pk.split()
-            if len(syllables) >= 2 and syllables[0] == syl:
+            pinyin_syls = pk.split()
+            if len(pinyin_syls) >= 2 and pinyin_syls[0] == syl:
                 for w in words:
                     if len(w) >= 2 and w[0] == last_char and w not in seen:
                         seen.add(w)
-                        # Extract the "continuation" part (e.g. 今→天 for 今天)
-                        continuation = w[1:]
-                        if continuation:
-                            candidates.append(continuation)
-        # Also add the full word as a prediction
-        result = list(dict.fromkeys(candidates))[:6]
-        return result
+                        wordmap_hits.append(w)
+
+        # Merge: bigram hits first (personalized), then wordmap, deduped
+        result = []
+        for w, _ in bigram_hits:
+            if w not in result:
+                result.append(w)
+        for w in wordmap_hits:
+            if w not in result:
+                result.append(w)
+        return result[:6]
 
     def learn_late_llm_result(self, pinyin: str, refined: list[str]):
         if not refined:
@@ -831,3 +879,4 @@ class Engine:
     def save_learner(self):
         self.learner.save()
         self.save_llm_scores()
+        self.save_bigrams()
